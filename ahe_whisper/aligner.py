@@ -1739,7 +1739,14 @@ class OverlapDPAligner:
             return out
 
         run_tag = os.environ.get("AHE_RUN_ID", "").strip() or time.strftime("%Y%m%d_%H%M%S")
-        out_path = os.path.join(out_dir, f"boundary_snap_{run_tag}_{os.getpid()}.jsonl")
+        base_name = f"{run_tag}_boundary_snap.jsonl"
+        out_path = os.path.join(out_dir, base_name)
+        if os.path.exists(out_path):
+            for i in range(1, 100):
+                candidate = os.path.join(out_dir, f"{run_tag}_boundary_snap_{i}.jsonl")
+                if not os.path.exists(candidate):
+                    out_path = candidate
+                    break
 
         def _entropy(p: np.ndarray) -> float:
             x = np.clip(p.astype(np.float64), 1e-12, 1.0)

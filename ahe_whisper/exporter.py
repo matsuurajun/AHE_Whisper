@@ -526,9 +526,10 @@ class Exporter:
         safe_basename = re.sub(r'[^\w.\-]+', '_', basename).strip('._') or "run"
             
         run_dir = None
+        run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         for i in range(100):
             suffix = "" if i == 0 else f"-{i+1}"
-            run_dir_name = f"{safe_basename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{suffix}"
+            run_dir_name = f"{run_ts}_{safe_basename}{suffix}"
             candidate_dir = self.output_dir / run_dir_name
             try:
                 candidate_dir.mkdir(parents=True, exist_ok=False)

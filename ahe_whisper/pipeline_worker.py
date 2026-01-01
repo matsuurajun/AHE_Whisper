@@ -414,7 +414,11 @@ def worker_process_loop(job_q: Queue, result_q: Queue, log_q: Queue, project_roo
                 full_log_path = run_dir / "performance.log"
                 with open(full_log_path, "w", encoding="utf-8") as f:
                     f.write(LOG_BUFFER.getvalue())
+                txt_log_path = run_dir / "performance.txt"
+                with open(txt_log_path, "w", encoding="utf-8") as f:
+                    f.write(LOG_BUFFER.getvalue())
                 logger.info(f"[PIPELINE] log saved to {full_log_path}")
+                logger.info(f"[PIPELINE] log saved to {txt_log_path}")
 
                 # === [AHE TRACE] stderr の生出力が残っている場合、1例だけ出所を表示 ===
                 if STDERR_TRACE_EVENTS:
