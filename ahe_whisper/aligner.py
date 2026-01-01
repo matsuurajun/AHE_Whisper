@@ -1453,7 +1453,7 @@ class OverlapDPAligner:
         word_path = self._word_dp_viterbi(emissions, penalties)
 
         out = np.array(final_path, copy=True)
-        for j, (_wi, i0, i1) in enumerate(spans):
+        for j, (_wi, i0, i1, _s_f, _e_f) in enumerate(spans):
             out[i0:i1] = int(word_path[j])
 
         try:
