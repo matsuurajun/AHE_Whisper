@@ -173,7 +173,7 @@ def get_default_config(state: AppState) -> None:
                 default_label = "Auto" if target is None else str(int(target))
                 if default_label not in options:
                     default_label = "Auto"
-                sel = ui.select('Target Speakers', options=list(options.keys()), value=default_label)
+                sel = ui.select(options=list(options.keys()), label='Target Speakers', value=default_label)
 
                 def _apply_target(e):
                     target_value = options.get(e.value, None)
