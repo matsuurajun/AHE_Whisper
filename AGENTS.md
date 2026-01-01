@@ -40,3 +40,6 @@
 
 ## エージェント向けメモ
 - アーキテクチャや診断手順は `CLAUDE.md` を参照してください。
+
+## ExecPlans
+- When writing complex features or significant refactors, use an ExecPlan (as described in .agent/PLANS.md) from design to implementation.
