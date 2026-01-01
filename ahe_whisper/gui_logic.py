@@ -111,9 +111,23 @@ def start_processing(state: AppState, job_q: Any) -> None:
     if state.status_label: state.status_label.set_text("Processing... See logs for details.")
     if state.log_area: state.log_area.clear()
     if state.result_link_container: state.result_link_container.clear()
-    
+
+    _normalize_config_for_run(state.config)
     job = (state.config.to_dict(), str(state.audio_file_path))
     job_q.put(job)
+
+
+def _normalize_config_for_run(cfg: AppConfig) -> None:
+    target = getattr(cfg.diarization, "target_speakers", None)
+    if target is not None:
+        t = int(target)
+        if t < 1:
+            t = 1
+        cfg.diarization.min_speakers = t
+        cfg.diarization.max_speakers = t
+
+    if cfg.diarization.min_speakers > cfg.diarization.max_speakers:
+        cfg.diarization.max_speakers = int(cfg.diarization.min_speakers)
 
 def update_ui_with_results(state: AppState, result_q: Any) -> None:
     if not result_q.empty():
@@ -154,9 +168,38 @@ def get_default_config(state: AppState) -> None:
                 ui.label('Diarization').classes('text-lg font-semibold')
                 ui.number('Min Speakers', value=cfg.diarization.min_speakers, min=1, format='%.0f').bind_value(cfg.diarization, 'min_speakers')
                 ui.number('Max Speakers', value=cfg.diarization.max_speakers, min=1, format='%.0f').bind_value(cfg.diarization, 'max_speakers')
+                options = {"Auto": None, "2": 2, "3": 3, "4": 4}
+                target = getattr(cfg.diarization, "target_speakers", None)
+                default_label = "Auto" if target is None else str(int(target))
+                if default_label not in options:
+                    default_label = "Auto"
+                sel = ui.select('Target Speakers', options=list(options.keys()), value=default_label)
+
+                def _apply_target(e):
+                    target_value = options.get(e.value, None)
+                    cfg.diarization.target_speakers = target_value
+                    if target_value is not None:
+                        cfg.diarization.min_speakers = int(target_value)
+                        cfg.diarization.max_speakers = int(target_value)
+
+                sel.on_value_change(_apply_target)
                 ui.number('VAD Start Threshold', value=cfg.diarization.vad_th_start, min=0.0, max=1.0, step=0.05, format='%.2f').bind_value(cfg.diarization, 'vad_th_start')
                 ui.number('VAD End Threshold', value=cfg.diarization.vad_th_end, min=0.0, max=1.0, step=0.05, format='%.2f').bind_value(cfg.diarization, 'vad_th_end')
-                
+
+                ui.separator().classes('my-4')
+                ui.label('VBx-Lite Resegmentation').classes('text-lg font-semibold')
+                ui.switch('Enable VBx', value=getattr(cfg.diarization, "enable_vbx_resegmentation", True)).bind_value(cfg.diarization, 'enable_vbx_resegmentation')
+                ui.number('p_stay (speech)', value=getattr(cfg.diarization, "vbx_p_stay_speech", 0.995),
+                          min=0.90, max=0.9999, step=0.0005, format='%.4f').bind_value(cfg.diarization, 'vbx_p_stay_speech')
+                ui.number('p_stay (silence)', value=getattr(cfg.diarization, "vbx_p_stay_silence", 0.999),
+                          min=0.90, max=0.9999, step=0.0005, format='%.4f').bind_value(cfg.diarization, 'vbx_p_stay_silence')
+                ui.number('speech_th', value=getattr(cfg.diarization, "vbx_speech_th", 0.35),
+                          min=0.0, max=1.0, step=0.05, format='%.2f').bind_value(cfg.diarization, 'vbx_speech_th')
+                ui.number('out_hard_mix', value=getattr(cfg.diarization, "vbx_out_hard_mix", 0.20),
+                          min=0.0, max=1.0, step=0.05, format='%.2f').bind_value(cfg.diarization, 'vbx_out_hard_mix')
+                ui.number('min_run_sec', value=getattr(cfg.diarization, "vbx_min_run_sec", 1.0),
+                          min=0.0, max=5.0, step=0.1, format='%.1f').bind_value(cfg.diarization, 'vbx_min_run_sec')
+
                 ui.separator().classes('my-4')
                 ui.label('Aligner (Speaker Switch)').classes('text-lg font-semibold')
                 

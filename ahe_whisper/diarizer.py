@@ -196,8 +196,12 @@ class Diarizer:
 
         k_min = self.config.min_speakers
         k_max = min(self.config.max_speakers, embeddings.shape[0])
-        
-        k = max(k_min, min(k_max, int(np.sqrt(embeddings.shape[0]/2)) if embeddings.shape[0] > 8 else 2))
+
+        target = getattr(self.config, "target_speakers", None)
+        if target is not None:
+            k = int(max(1, min(int(target), k_max)))
+        else:
+            k = max(k_min, min(k_max, int(np.sqrt(embeddings.shape[0]/2)) if embeddings.shape[0] > 8 else 2))
 
         kmeans = KMeans(n_clusters=k, random_state=42, n_init=10).fit(embeddings)
         
@@ -370,7 +374,15 @@ class Diarizer:
         # === ここで spk_valid は (T, K). これを grid_times に一度だけ補間 ===
         spk_probs = np.zeros((len(grid_times), K), dtype=np.float32)
         for k in range(K):
-            fn = interp1d(valid_times, spk_valid[:, k], kind='linear', bounds_error=False, fill_value="extrapolate")
+            y0 = float(spk_valid[0, k])
+            y1 = float(spk_valid[-1, k])
+            fn = interp1d(
+                valid_times,
+                spk_valid[:, k],
+                kind="linear",
+                bounds_error=False,
+                fill_value=(y0, y1),
+            )
             spk_probs[:, k] = fn(grid_times)
 
         # 数値安定＆最終正規化（行方向で確率和=1）
@@ -413,12 +425,14 @@ class Diarizer:
             # grid_times へ再補間
             spk_probs = np.zeros((len(grid_times), K), dtype=np.float32)
             for k in range(K):
+                y0 = float(spk_valid_hard[0, k])
+                y1 = float(spk_valid_hard[-1, k])
                 fn = interp1d(
                     valid_times,
                     spk_valid_hard[:, k],
                     kind="linear",
                     bounds_error=False,
-                    fill_value="extrapolate",
+                    fill_value=(y0, y1),
                 )
                 spk_probs[:, k] = fn(grid_times)
 

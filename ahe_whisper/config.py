@@ -37,7 +37,16 @@ class EmbeddingConfig:
 @dataclass
 class DiarizationConfig:
     min_speakers: int = 2
-    max_speakers: int = 3
+    max_speakers: int = 2
+    # GUI: Auto/2/3/4. Auto is None.
+    target_speakers: Optional[int] = 2
+    # VBx-Lite resegmentation
+    enable_vbx_resegmentation: bool = True
+    vbx_p_stay_speech: float = 0.995
+    vbx_p_stay_silence: float = 0.999
+    vbx_speech_th: float = 0.35
+    vbx_out_hard_mix: float = 0.20
+    vbx_min_run_sec: float = 1.0
     engine: str = "soft-em-adc"
     vad_th_start: float = 0.5
     vad_th_end: float = 0.3
@@ -80,6 +89,14 @@ class DiarizationConfig:
             raise ValueError(f"vad_th_start ({self.vad_th_start}) must be >= vad_th_end ({self.vad_th_end}).")
         if self.min_speakers > self.max_speakers:
             raise ValueError(f"min_speakers ({self.min_speakers}) cannot be greater than max_speakers ({self.max_speakers}).")
+        if self.target_speakers is not None and self.target_speakers < 1:
+            raise ValueError(f"target_speakers must be >= 1 or None, got {self.target_speakers}")
+        for name in ("vbx_p_stay_speech", "vbx_p_stay_silence", "vbx_speech_th", "vbx_out_hard_mix"):
+            value = float(getattr(self, name))
+            if not (0.0 <= value <= 1.0):
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
+        if self.vbx_min_run_sec < 0.0:
+            raise ValueError(f"vbx_min_run_sec must be >= 0, got {self.vbx_min_run_sec}")
         if not (0.0 < self.min_cluster_mass <= 1.0):
             raise ValueError(f"min_cluster_mass must be in (0, 1], got {self.min_cluster_mass}")
         if not (0.0 < self.centroid_merge_sim <= 1.0):

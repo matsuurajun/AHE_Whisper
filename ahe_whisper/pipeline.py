@@ -20,11 +20,54 @@ from ahe_whisper.embedding import (
 from ahe_whisper.vad import VAD
 from ahe_whisper.diarizer import Diarizer
 from ahe_whisper.aligner import OverlapDPAligner
+from ahe_whisper.vbx_resegment import vbx_resegment
 from ahe_whisper.utils import get_metrics, add_metric, calculate_coverage_metrics
 from ahe_whisper.post_diar import sanitize_speaker_timeline
 from ahe_whisper.model_manager import ensure_model_available
 
 LOGGER = logging.getLogger("ahe_whisper_worker")
+
+
+def _normalize_diarization_config(config: AppConfig) -> None:
+    diar = config.diarization
+    target = getattr(diar, "target_speakers", None)
+    if target is not None:
+        t = int(target)
+        if t < 1:
+            t = 1
+        if diar.min_speakers != t or diar.max_speakers != t:
+            LOGGER.info(
+                "[CONFIG-DIAR] target_speakers=%d -> forcing min/max to %d",
+                t,
+                t,
+            )
+        diar.min_speakers = t
+        diar.max_speakers = t
+    if diar.min_speakers > diar.max_speakers:
+        LOGGER.warning(
+            "[CONFIG-DIAR] min_speakers=%d > max_speakers=%d; clamping max to min",
+            diar.min_speakers,
+            diar.max_speakers,
+        )
+        diar.max_speakers = int(diar.min_speakers)
+
+
+def _spk_prob_stats(spk_probs: np.ndarray) -> Tuple[float, float, int]:
+    if spk_probs.size == 0:
+        return 0.0, 0.0, 0
+    max_per_row = np.max(spk_probs, axis=1)
+    mean_max = float(np.mean(max_per_row))
+    entropy = float(
+        -np.mean(
+            np.sum(
+                spk_probs * np.log(np.clip(spk_probs, 1e-9, 1.0)),
+                axis=1,
+            )
+        )
+    )
+    labels = np.argmax(spk_probs, axis=1)
+    switches = int(np.sum(labels[1:] != labels[:-1])) if labels.size > 1 else 0
+    return mean_max, entropy, switches
 
 
 def _get_embedding_backend_and_key(config: AppConfig) -> Tuple[str, str]:
@@ -180,6 +223,7 @@ def run(
 ) -> Dict[str, Any]:
     
     t0 = time.perf_counter()
+    _normalize_diarization_config(config)
     waveform, sr = librosa.load(audio_path, sr=16000, mono=True)
     duration_sec = len(waveform) / sr
     LOGGER.info(f"Audio loaded: duration={duration_sec:.2f}s")
@@ -540,6 +584,37 @@ def run(
             )
         except Exception as e:
             LOGGER.warning(f"[SPK-PROBS] diagnostic failed: {e}")
+
+        spk_probs_raw = spk_probs.copy()
+        if getattr(config.diarization, "enable_vbx_resegmentation", False):
+            try:
+                pre_mm, pre_ent, pre_sw = _spk_prob_stats(spk_probs_raw)
+                spk_probs, vbx_diag = vbx_resegment(
+                    spk_probs=spk_probs,
+                    vad_probs=vad_probs,
+                    grid_hz=int(config.aligner.grid_hz),
+                    p_stay_speech=float(config.diarization.vbx_p_stay_speech),
+                    p_stay_silence=float(config.diarization.vbx_p_stay_silence),
+                    speech_th=float(config.diarization.vbx_speech_th),
+                    out_hard_mix=float(config.diarization.vbx_out_hard_mix),
+                    min_run_sec=float(config.diarization.vbx_min_run_sec),
+                )
+                post_mm, post_ent, post_sw = _spk_prob_stats(spk_probs)
+                LOGGER.info(
+                    "[VBX] pre: mean_max=%.3f, mean_entropy=%.3f, switches=%d",
+                    pre_mm,
+                    pre_ent,
+                    pre_sw,
+                )
+                LOGGER.info(
+                    "[VBX] post: mean_max=%.3f, mean_entropy=%.3f, switches=%d",
+                    post_mm,
+                    post_ent,
+                    post_sw,
+                )
+                LOGGER.info("[VBX] diag=%s", vbx_diag)
+            except Exception as e:
+                LOGGER.warning("[VBX] resegmentation failed: %s", e)
                
         aligner = OverlapDPAligner(config.aligner)
         
