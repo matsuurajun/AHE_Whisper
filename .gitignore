@@ -1,0 +1,90 @@
+# ============================================================
+# AHE-Whisper v90.90 Definitive Release — GitHub Safe .gitignore
+# ============================================================
+
+# === 1. Core runtime & models ===
+models/
+AHE_Whisper_output/
+docs/
+archive/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+
+# === 2. Large model formats ===
+*.bin
+*.onnx
+*.coreml
+*.mlmodel
+*.pt
+*.ckpt
+*.npy
+*.npz
+
+# === 3. Generated logs / temp files ===
+*.log
+*.tmp
+*.cache
+*.bak
+*.pid
+*.swp
+*.swo
+
+# === 4. Python build artifacts ===
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# === 5. System / environment files ===
+.DS_Store
+*.DS_Store
+Thumbs.db
+desktop.ini
+
+# === 6. Virtual environments ===
+venv/
+.env/
+.venv/
+env/
+env.bak/
+env_local/
+.uv/
+
+# === 7. IDE / Editor configs ===
+.vscode/
+.idea/
+*.code-workspace
+
+# === 8. Temporary scripts / sandbox files ===
+test_*.py
+debug_*.py
+scratch_*.py
+
+# === 9. Visualization / debug outputs ===
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+similarity_heatmap.png
+
+# === 10. WhisperKit / MLX / ONNX local caches ===
+mlx-community/
+onnx-community/
+Wespeaker/
+prefetch_cache/
+__downloaded_models__/
+__local_cache__/
+
+# === 11. Mac shell command wrappers ===
+*.command
+run_offline.command
+run_local.command
+

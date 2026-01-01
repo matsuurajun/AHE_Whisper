@@ -1,0 +1,41 @@
+frontend:
+  type: fbank   # log-mel filterbank
+  sample_rate: 16000
+  num_mels: 80
+  frame_length: 25      # ms
+  frame_shift: 10       # ms
+  window_type: hann
+  dither: 0.0
+  energy_floor: 1e-10
+
+cmvn:
+  apply: true
+  type: utterance  # ER2NetV2 では utterance-level が標準
+  eps: 1e-5
+
+model:
+  type: ERes2NetV2
+  input_dim: 80
+  embedding_dim: 192       # ★ 重要：ERes2NetV2 は 192-dim
+  backend: onnx
+  onnx_input_name: x       # ★ 重要
+  onnx_output_name: embedding
+
+inference:
+  # embedding ← 時間方向プーリング（ONNX側は既に pooled embedding）
+  frame_pooling: mean   # 念のため宣言（ER2NetV2 は既に mean-pool 済）
+
+  # AHE-Whisper 側の diarizer の初期スケール
+  normalize_embedding: true
+  embedding_l2_norm: true     # ★ AHE で強制 L2 normalize 推奨
+
+  # similarity threshold 初期値（後で調整可）
+  similarity_threshold: 0.90
+
+metadata:
+  source: "HuggingFace csukuangfj/speaker-embedding-models"
+  original_model: "iic/speech_eres2netv2_sv_zh-cn_16k-common"
+  note: >
+    This config file was manually constructed for AHE-Whisper integration.
+    Parameters follow the standard ModelScope/WeSpeaker frontend for 16k fbank
+    and the known IO specification of the ERes2NetV2 ONNX model.

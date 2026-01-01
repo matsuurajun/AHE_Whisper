@@ -1,0 +1,19 @@
+# AHE-Whisper v90.90 Definitive Final Release
+# For reproducible builds, use a lock file generated from this file.
+# Example with uv: `uv pip compile requirements.txt -o requirements.lock.txt`
+#
+# Python 3.8-3.12, macOS/Apple Silicon
+mlx-whisper
+numpy>=1.26.4,<2.0.0
+librosa>=0.10.0,<0.11.0
+onnxruntime>=1.17.0,<1.19.0
+scikit-learn>=1.3.0,<1.6.0
+scipy>=1.11.0,<1.14.0
+nicegui>=1.4.0,<1.5.0
+dacite
+huggingface-hub
+soundfile>=0.12.0,<0.13.0
+pyyaml
+sudachipy
+sudachidict_core
+sentencepiece==0.2.1
