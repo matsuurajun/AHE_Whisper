@@ -1920,6 +1920,7 @@ class OverlapDPAligner:
                             "post_to_scale_argmax": float(post_to_scale_argmax) if post_to_scale_argmax is not None else None,
                             "post_to_scale_path": float(post_to_scale_path) if post_to_scale_path is not None else None,
                             "post_to_scale_conf": float(post_to_scale_conf) if post_to_scale_conf is not None else None,
+                            "dp_terms_version": 1,
                             "dp_cost_total": float(dp_add_total),
                             "dp_cost_terms": {
                                 "vad": float(dp_add_vad),
@@ -1958,6 +1959,7 @@ class OverlapDPAligner:
                         "num_speakers": int(spk_probs.shape[1]),
                         "path_old": path_old,
                         "path_new": path_new,
+                        "dp_terms_version": 1 if dp_evt_total is not None else None,
                         "dp_cost_total": float(dp_evt_total) if dp_evt_total is not None else None,
                         "dp_cost_terms": {
                             "vad": float(dp_evt_vad),

@@ -164,6 +164,105 @@ def _fmt_dbg(v: Any) -> str:
     return str(v)
 
 
+def _summarize_dp_terms_version(raw: List[Dict[str, Any]]) -> Tuple[List[int], int, int]:
+    versions: List[int] = []
+    total_terms = 0
+    missing_version = 0
+    seen: Dict[int, bool] = {}
+    for ev in raw:
+        if not isinstance(ev, dict):
+            continue
+        has_terms = "dp_cost_terms" in ev
+        frames = ev.get("frames")
+        if not has_terms and isinstance(frames, list):
+            for fr in frames:
+                if isinstance(fr, dict) and "dp_cost_terms" in fr:
+                    has_terms = True
+                    break
+        if has_terms:
+            total_terms += 1
+        v = _as_int(ev.get("dp_terms_version"))
+        if v is not None:
+            if v not in seen:
+                seen[v] = True
+                versions.append(v)
+        elif has_terms:
+            missing_version += 1
+    versions.sort()
+    return versions, total_terms, missing_version
+
+
+def _term_value(terms: Any, key: str) -> Optional[float]:
+    if not isinstance(terms, dict):
+        return None
+    if key in terms:
+        return _as_float(terms.get(key))
+    if key == "post_to_scale_path":
+        return _as_float(terms.get("post_to_scale"))
+    return None
+
+
+def _dominant_term(terms: Any, keys: Iterable[str]) -> Tuple[Optional[str], Optional[float]]:
+    best_key: Optional[str] = None
+    best_val: Optional[float] = None
+    best_mag: Optional[float] = None
+    for k in keys:
+        v = _term_value(terms, k)
+        if v is None:
+            continue
+        mag = abs(v)
+        if best_mag is None or mag > best_mag:
+            best_mag = mag
+            best_key = k
+            best_val = v
+    return best_key, best_val
+
+
+def _mean(xs: List[float]) -> Optional[float]:
+    if not xs:
+        return None
+    return sum(xs) / len(xs)
+
+
+def _bucket_stats(rows: List[Row], keys: Iterable[str]) -> Dict[str, Any]:
+    total_vals: List[float] = []
+    term_vals: Dict[str, List[float]] = {k: [] for k in keys}
+    for r in rows:
+        if r.dp_cost_total is not None:
+            total_vals.append(float(r.dp_cost_total))
+        terms = r.dp_cost_terms
+        for k in keys:
+            v = _term_value(terms, k)
+            if v is not None:
+                term_vals[k].append(float(v))
+    return {
+        "count": len(rows),
+        "dp_cost_total": _mean(total_vals),
+        "terms": {k: _mean(vs) for k, vs in term_vals.items()},
+    }
+
+
+def _switches_in_intervals(
+    switches: List[Row],
+    intervals: List[Tuple[float, float]],
+    tol: float,
+) -> List[Row]:
+    out: List[Row] = []
+    seen: Dict[int, bool] = {}
+    for start, end in intervals:
+        lo = start - tol
+        hi = end + tol
+        for r in switches:
+            if r.t < lo or r.t > hi:
+                continue
+            if r.idx in seen:
+                continue
+            seen[r.idx] = True
+            out.append(r)
+    out.sort(key=lambda r: (r.t, r.idx))
+    return out
+
+
 def fmt_terms(v: Any, nd: int = 3, max_len: int = 60) -> str:
     if v is None:
         return "NA"
@@ -583,6 +682,18 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--snap", required=True, help="Path to boundary_snap_*.jsonl")
     ap.add_argument("--cp-th", type=float, default=0.1, help="Threshold for low-cp switch filter (default: 0.1)")
     ap.add_argument(
+        "--cp-high-th",
+        type=float,
+        default=0.9,
+        help="Threshold for high-cp bucket (default: 0.9)",
+    )
+    ap.add_argument(
+        "--cp-low-th",
+        type=float,
+        default=0.3,
+        help="Threshold for low-cp bucket (default: 0.3)",
+    )
+    ap.add_argument(
         "--entropy-th",
         type=float,
         default=0.68,
@@ -650,6 +761,7 @@ def main(argv: List[str]) -> int:
         return 2
 
     raw = load_jsonl(snap_path)
+    versions, total_terms, missing_version = _summarize_dp_terms_version(raw)
     rows = build_rows(raw)
     if not rows:
         print("ERROR: no usable events with time field found in snap.", file=sys.stderr)
@@ -659,10 +771,18 @@ def main(argv: List[str]) -> int:
     switches = sum(1 for r in rows if is_switch(r.etype))
     cp_peaks = sum(1 for r in rows if is_cp_peak(r.etype))
     ln2 = math.log(2.0)
+    all_switches = [r for r in rows if is_switch(r.etype)]
 
     print_header("boundary_snap summary")
     print(f"snap: {snap_path}")
     print(f"rows: {len(rows)}  switches: {switches}  cp_peaks: {cp_peaks}")
+    if total_terms > 0:
+        if not versions:
+            print("WARNING: dp_terms_version missing (legacy snap schema).")
+        elif missing_version > 0:
+            print(f"WARNING: dp_terms_version missing in {missing_version}/{total_terms} events.")
+        else:
+            print(f"dp_terms_version: {','.join(str(v) for v in versions)}")
     print(f"entropy reference: ln2={ln2:.6f}")
     print("event type counts:")
     for k in sorted(counts.keys()):
@@ -711,6 +831,34 @@ def main(argv: List[str]) -> int:
                             f"dp={fmt_opt(n.dp_cost_total, nd=6)}  terms={fmt_terms(n.dp_cost_terms, nd=2, max_len=40)}"
                         )
                     )
+
+    cp_keys = (
+        "vad",
+        "spk",
+        "word",
+        "sw_pen",
+        "cp_scale",
+        "uncertain_scale",
+        "lex_scale",
+        "post_to_scale_path",
+    )
+    high_cp = [r for r in all_switches if r.cp is not None and r.cp >= args.cp_high_th]
+    low_cp = [r for r in all_switches if r.cp is not None and r.cp <= args.cp_low_th]
+
+    print_header("cp buckets (switches)")
+    print(f"thresholds: high>={args.cp_high_th:.2f}  low<={args.cp_low_th:.2f}")
+    for label, bucket in (("high", high_cp), ("low", low_cp)):
+        stats = _bucket_stats(bucket, cp_keys)
+        terms = stats.get("terms", {})
+        print(
+            f"{label}: count={stats['count']}  "
+            f"dp_total={fmt_opt(stats.get('dp_cost_total'), nd=6)}  "
+            f"sw_pen={fmt_opt(terms.get('sw_pen'), nd=6)}  "
+            f"cp_scale={fmt_opt(terms.get('cp_scale'), nd=6)}  "
+            f"uncertain_scale={fmt_opt(terms.get('uncertain_scale'), nd=6)}  "
+            f"lex_scale={fmt_opt(terms.get('lex_scale'), nd=6)}  "
+            f"post_to_scale={fmt_opt(terms.get('post_to_scale_path'), nd=6)}"
+        )
 
     segs: List[Seg] = []
     if args.transcript:
@@ -876,8 +1024,17 @@ def main(argv: List[str]) -> int:
             return 2
         intervals = _load_eval_intervals(eval_path)
 
-        all_switches = [r for r in rows if is_switch(r.etype)]
         low_switches = low
+        dom_keys = (
+            "vad",
+            "spk",
+            "word",
+            "sw_pen",
+            "cp_scale",
+            "uncertain_scale",
+            "lex_scale",
+            "post_to_scale_path",
+        )
 
         print_header("eval overlap")
         print(f"eval: {eval_path}")
@@ -910,6 +1067,39 @@ def main(argv: List[str]) -> int:
                 f"hit={hit_low}/{len(low_switches)}  "
                 f"unc_true={by_unc_low['true']}  unc_false={by_unc_low['false']}  unc_na={by_unc_low['na']}"
             )
+
+            interval_switches = _switches_in_intervals(all_switches, xs, tol=args.eval_tol_sec)
+            if interval_switches:
+                dom_counts: Dict[str, int] = {}
+                missing_terms = 0
+                for r in interval_switches:
+                    k, _ = _dominant_term(r.dp_cost_terms, dom_keys)
+                    if k is None:
+                        missing_terms += 1
+                        continue
+                    dom_counts[k] = dom_counts.get(k, 0) + 1
+                print(
+                    "  switches in intervals: "
+                    f"{len(interval_switches)}  "
+                    f"missing_terms={missing_terms}"
+                )
+                if dom_counts:
+                    dom_list = ", ".join(f"{k}={dom_counts[k]}" for k in sorted(dom_counts.keys()))
+                    print(f"  dominant terms: {dom_list}")
+                sample = interval_switches[:10]
+                print("  sample switches: time  cp  dp_total  dominant(term=value)")
+                for r in sample:
+                    dk, dv = _dominant_term(r.dp_cost_terms, dom_keys)
+                    if dk is None:
+                        dom = "NA"
+                    else:
+                        dom = f"{dk}={fmt_opt(dv, nd=6)}"
+                    print(
+                        f"    {r.t:9.3f}  {fmt_opt(r.cp):>8}  "
+                        f"{fmt_opt(r.dp_cost_total, nd=6):>9}  {dom}"
+                    )
+            else:
+                print("  switches in intervals: 0")
 
     return 0
 
