@@ -282,7 +282,9 @@ class OverlapDPAligner:
             p_argmax_t = np.argmax(spk_probs, axis=1).astype(np.int32)
             if num_speakers >= 2:
                 top2 = np.partition(spk_probs, -2, axis=1)[:, -2:]
-                p_margin_t = (top2[:, 1] - top2[:, 0]).astype(np.float32)
+                top1 = np.max(top2, axis=1)
+                top2v = np.min(top2, axis=1)
+                p_margin_t = (top1 - top2v).astype(np.float32)
 
                 # normalized entropy in [0,1] (1.0 is max-entropy)
                 eps_ent = 1e-12
