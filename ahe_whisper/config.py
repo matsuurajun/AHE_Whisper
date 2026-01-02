@@ -176,7 +176,7 @@ class AlignerConfig:
     # 2位とのマージンが switch_post_margin_th 以上であれば、スイッチ罰則を
     #   scale = max(0, 1 - switch_post_k * (margin - th) / (1 - th))
     # のように緩和する。
-    switch_post_k: float = 0.0
+    switch_post_k: float = 2.0
     switch_post_margin_th: float = 0.5
 
     # --- NEW: uncertainty-aware switch penalty boost ---
