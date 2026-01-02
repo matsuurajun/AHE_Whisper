@@ -1836,27 +1836,27 @@ class OverlapDPAligner:
                                 uncertain_scale = float(switch_uncertain_penalty_mult)
                         uncertain_hit = bool(uncertain_scale > 1.0)
 
-                        # Re-calculation based on DP terms (requested diff logic)
+                        # Re-calculation based on DP terms (align with DP gate logic)
                         post_to_scale_path = 1.0
                         post_to_scale_argmax = 1.0
-                        post_to_scale_conf = 1.0
+                        post_to_scale_conf = None
 
-                        if bool(getattr(self.config, "switch_post_gate", False)):
-                            k_path = int(final_path[t])
+                        if switch_post_k > 0.0:
+                            denom = max(1e-6, 1.0 - float(switch_post_margin_th))
+                            conf = (float(p_margin) - float(switch_post_margin_th)) / denom
+                            if conf > 0.0:
+                                conf = min(1.0, conf)
+                                scale = 1.0 - (switch_post_k * conf)
+                                scale = max(0.0, scale)
+                            else:
+                                conf = 0.0
+                                scale = 1.0
+
                             k_arg = int(p_argmax)
-                            # Note: using the formula from user's diff. 
-                            # If switch_post_gate is False, this block is skipped.
-                            post_to_scale_path = (
-                                (1.0 + post_k * max(0.0, (post_margin_th - p_margin)))
-                                if k_path == k_arg
-                                else 1.0
-                            )
-                            post_to_scale_argmax = (
-                                (1.0 + post_k * max(0.0, (post_margin_th - p_margin)))
-                                if k_arg == k_arg
-                                else 1.0
-                            )
-                            post_to_scale_conf = post_to_scale_path
+                            if int(final_path[t]) == k_arg:
+                                post_to_scale_path = scale
+                            post_to_scale_argmax = scale
+                            post_to_scale_conf = conf
 
                         prev_state = int(final_path[t - 1]) if t > 0 else int(final_path[t])
                         cur_state = int(final_path[t])
