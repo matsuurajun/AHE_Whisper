@@ -1786,6 +1786,7 @@ class OverlapDPAligner:
                         k2 = int(np.argmax(tmp)) if p.size >= 2 else k1
                         tmp[k2] = -1.0
                         k3 = int(np.argmax(tmp)) if p.size >= 3 else k2
+                        p_argmax = k1
 
                         v1 = float(p[k1])
                         v2 = float(p[k2])

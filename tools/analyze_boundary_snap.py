@@ -224,6 +224,90 @@ def _mean(xs: List[float]) -> Optional[float]:
     return sum(xs) / len(xs)
 
 
+def _quantile(xs: List[float], q: float) -> Optional[float]:
+    if not xs:
+        return None
+    if q <= 0.0:
+        return min(xs)
+    if q >= 1.0:
+        return max(xs)
+    ys = sorted(xs)
+    n = len(ys)
+    pos = (n - 1) * q
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return ys[lo]
+    return ys[lo] + (ys[hi] - ys[lo]) * (pos - lo)
+
+
+def _margin_histogram(
+    xs: List[float],
+    bin_width: float,
+    bin_max: float,
+) -> Tuple[List[Tuple[float, float, int]], int, int]:
+    if bin_width <= 0.0 or bin_max <= 0.0:
+        return [], 0, 0
+    n_bins = int(math.ceil(bin_max / bin_width))
+    bins: List[Tuple[float, float, int]] = []
+    for i in range(n_bins):
+        lo = i * bin_width
+        hi = min(bin_max, (i + 1) * bin_width)
+        bins.append((lo, hi, 0))
+    under = 0
+    over = 0
+    for x in xs:
+        if x < 0.0:
+            under += 1
+            continue
+        if x > bin_max:
+            over += 1
+            continue
+        idx = int(x / bin_width)
+        if idx >= n_bins:
+            idx = n_bins - 1
+        lo, hi, c = bins[idx]
+        bins[idx] = (lo, hi, c + 1)
+    return bins, under, over
+
+
+def _print_margin_summary(label: str, xs: List[float], total: int) -> None:
+    missing = total - len(xs)
+    if not xs:
+        print(f"{label}: count=0  missing={missing}")
+        return
+    q05 = _quantile(xs, 0.05)
+    q25 = _quantile(xs, 0.25)
+    q50 = _quantile(xs, 0.50)
+    q75 = _quantile(xs, 0.75)
+    q95 = _quantile(xs, 0.95)
+    print(
+        f"{label}: count={len(xs)}  missing={missing}  "
+        f"min={fmt_opt(min(xs))}  p05={fmt_opt(q05)}  p25={fmt_opt(q25)}  "
+        f"p50={fmt_opt(q50)}  p75={fmt_opt(q75)}  p95={fmt_opt(q95)}  "
+        f"max={fmt_opt(max(xs))}  mean={fmt_opt(_mean(xs))}"
+    )
+
+
+def _print_margin_hist(
+    label: str,
+    xs: List[float],
+    bin_width: float,
+    bin_max: float,
+) -> None:
+    print(f"{label} bins (width={bin_width:.2f}, range=0.0-{bin_max:.2f})")
+    if not xs:
+        print("  (no margins)")
+        return
+    bins, under, over = _margin_histogram(xs, bin_width=bin_width, bin_max=bin_max)
+    total = len(xs)
+    for lo, hi, c in bins:
+        pct = 100.0 * c / total if total else 0.0
+        print(f"  {lo:4.2f}-{hi:4.2f}: {c:5d} ({pct:5.1f}%)")
+    if under or over:
+        print(f"  under<0: {under}  over>{bin_max:.2f}: {over}")
+
+
 def _bucket_stats(rows: List[Row], keys: Iterable[str]) -> Dict[str, Any]:
     total_vals: List[float] = []
     term_vals: Dict[str, List[float]] = {k: [] for k in keys}
@@ -859,6 +943,18 @@ def main(argv: List[str]) -> int:
             f"lex_scale={fmt_opt(terms.get('lex_scale'), nd=6)}  "
             f"post_to_scale={fmt_opt(terms.get('post_to_scale_path'), nd=6)}"
         )
+
+    margin_bin_width = 0.10
+    margin_bin_max = 1.00
+    m_all = [r.margin for r in rows if r.margin is not None]
+    m_switch = [r.margin for r in all_switches if r.margin is not None]
+
+    print_header("p_margin distribution")
+    _print_margin_summary("all rows", m_all, len(rows))
+    _print_margin_summary("switches", m_switch, len(all_switches))
+    print("")
+    _print_margin_hist("all rows", m_all, bin_width=margin_bin_width, bin_max=margin_bin_max)
+    _print_margin_hist("switches", m_switch, bin_width=margin_bin_width, bin_max=margin_bin_max)
 
     segs: List[Seg] = []
     if args.transcript:
