@@ -1772,6 +1772,7 @@ class OverlapDPAligner:
                     dp_evt_uncertain_scale = None
                     dp_evt_lex_scale = None
                     dp_evt_post_to_scale = None
+                    dp_evt_spk_margin = None
 
                     lo = max(0, idx - win)
                     hi = min(T, idx + win + 1)
@@ -1800,6 +1801,11 @@ class OverlapDPAligner:
                         vad_v = (
                             float(vad_probs[t])
                             if vad_probs is not None and vad_probs.shape == (T,)
+                            else None
+                        )
+                        beta_v = (
+                            float(beta_t[t])
+                            if beta_t is not None and getattr(beta_t, "shape", None) == (T,)
                             else None
                         )
                         lex_scale_v = (
@@ -1836,6 +1842,13 @@ class OverlapDPAligner:
                             ):
                                 uncertain_scale = float(switch_uncertain_penalty_mult)
                         uncertain_hit = bool(uncertain_scale > 1.0)
+
+                        spk_margin = None
+                        if e.size >= 2:
+                            spk_term = e * (beta_v if beta_v is not None else 1.0)
+                            top1_spk = float(np.max(spk_term))
+                            top2_spk = float(np.partition(spk_term, -2)[-2])
+                            spk_margin = float(top1_spk - top2_spk)
 
                         # Re-calculation based on DP terms (align with DP gate logic)
                         post_to_scale_path = 1.0
@@ -1896,6 +1909,7 @@ class OverlapDPAligner:
                             dp_evt_uncertain_scale = uncertain_scale
                             dp_evt_lex_scale = lex_scale_v
                             dp_evt_post_to_scale = post_to_scale_path
+                            dp_evt_spk_margin = spk_margin
 
                         fr = {
                             "t": float(grid_times[t]),
@@ -1913,7 +1927,8 @@ class OverlapDPAligner:
                             "p_entropy_norm": p_entropy_norm,
                             "p_argmax": k1,
                             "emit_argmax": int(np.argmax(e)) if e.size > 0 else 0,
-                            "beta": float(beta_t[t]) if beta_t is not None and getattr(beta_t, "shape", None) == (T,) else None,
+                            "beta": beta_v,
+                            "spk_margin": float(spk_margin) if spk_margin is not None else None,
                             "lex_scale": lex_scale_v,
                             "cp": cp_v,
                             "cp_scale": cp_scale,
@@ -1937,6 +1952,7 @@ class OverlapDPAligner:
                                 "uncertain_scale": float(uncertain_scale),
                                 "lex_scale": float(lex_scale_v) if lex_scale_v is not None else None,
                                 "post_to_scale_path": float(post_to_scale_path) if post_to_scale_path is not None else None,
+                                "spk_margin": float(spk_margin) if spk_margin is not None else None,
                                 "runlen": int(dp_sw_runlen_frames),
                             },
                         }
@@ -1976,6 +1992,7 @@ class OverlapDPAligner:
                             "uncertain_scale": float(dp_evt_uncertain_scale),
                             "lex_scale": float(dp_evt_lex_scale) if dp_evt_lex_scale is not None else None,
                             "post_to_scale_path": float(dp_evt_post_to_scale) if dp_evt_post_to_scale is not None else None,
+                            "spk_margin": float(dp_evt_spk_margin) if dp_evt_spk_margin is not None else None,
                             "runlen": int(dp_evt_sw_runlen),
                         } if dp_evt_total is not None else None,
                         "switch_knobs": {

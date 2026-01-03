@@ -308,6 +308,34 @@ def _print_margin_hist(
         print(f"  under<0: {under}  over>{bin_max:.2f}: {over}")
 
 
+def _term_values(rows: List[Row], key: str) -> Tuple[List[float], int]:
+    vals: List[float] = []
+    missing = 0
+    for r in rows:
+        v = _term_value(r.dp_cost_terms, key)
+        if v is None:
+            missing += 1
+        else:
+            vals.append(float(v))
+    return vals, missing
+
+
+def _print_term_stats(label: str, rows: List[Row], keys: Iterable[str]) -> None:
+    print(label)
+    for k in keys:
+        vals, missing = _term_values(rows, k)
+        if not vals:
+            print(f"  {k}: count=0  missing={missing}")
+            continue
+        p50 = _quantile(vals, 0.50)
+        p95 = _quantile(vals, 0.95)
+        print(
+            f"  {k}: count={len(vals)}  missing={missing}  "
+            f"min={fmt_opt(min(vals))}  p50={fmt_opt(p50)}  p95={fmt_opt(p95)}  "
+            f"max={fmt_opt(max(vals))}  mean={fmt_opt(_mean(vals))}"
+        )
+
+
 def _events_in_intervals(
     rows: List[Row],
     intervals: List[Tuple[float, float]],
@@ -321,6 +349,16 @@ def _events_in_intervals(
         if _time_in_intervals(r.t, intervals, tol=tol):
             out.append(r)
     return out
+
+
+def _switches_outside_intervals(
+    switches: List[Row],
+    intervals: List[Tuple[float, float]],
+    tol: float,
+) -> List[Row]:
+    inside = _switches_in_intervals(switches, intervals, tol=tol)
+    inside_ids = {r.idx for r in inside}
+    return [r for r in switches if r.idx not in inside_ids]
 
 
 def _bucket_stats(rows: List[Row], keys: Iterable[str]) -> Dict[str, Any]:
@@ -1239,6 +1277,19 @@ def main(argv: List[str]) -> int:
                     bin_width=margin_bin_width,
                     bin_max=margin_bin_max,
                 )
+
+            if interval_switches:
+                outside_switches = _switches_outside_intervals(
+                    all_switches,
+                    xs,
+                    tol=args.eval_tol_sec,
+                )
+                print("  dp_terms compare (switches)")
+                _print_term_stats("    in intervals", interval_switches, dom_keys)
+                _print_term_stats("    outside intervals", outside_switches, dom_keys)
+                print("  spk_margin compare (switches)")
+                _print_term_stats("    in intervals", interval_switches, ("spk_margin",))
+                _print_term_stats("    outside intervals", outside_switches, ("spk_margin",))
 
     return 0
 
