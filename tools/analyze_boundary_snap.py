@@ -308,6 +308,21 @@ def _print_margin_hist(
         print(f"  under<0: {under}  over>{bin_max:.2f}: {over}")
 
 
+def _events_in_intervals(
+    rows: List[Row],
+    intervals: List[Tuple[float, float]],
+    tol: float,
+    only_switch: bool = False,
+) -> List[Row]:
+    out: List[Row] = []
+    for r in rows:
+        if only_switch and not is_switch(r.etype):
+            continue
+        if _time_in_intervals(r.t, intervals, tol=tol):
+            out.append(r)
+    return out
+
+
 def _bucket_stats(rows: List[Row], keys: Iterable[str]) -> Dict[str, Any]:
     total_vals: List[float] = []
     term_vals: Dict[str, List[float]] = {k: [] for k in keys}
@@ -1196,6 +1211,34 @@ def main(argv: List[str]) -> int:
                     )
             else:
                 print("  switches in intervals: 0")
+
+            ev_in_intervals = _events_in_intervals(rows, xs, tol=args.eval_tol_sec)
+            m_all = [r.margin for r in ev_in_intervals if r.margin is not None]
+            m_sw = [r.margin for r in interval_switches if r.margin is not None]
+            if ev_in_intervals or interval_switches:
+                print("  p_margin summary (in intervals)")
+                _print_margin_summary(
+                    "    all events",
+                    m_all,
+                    len(ev_in_intervals),
+                )
+                _print_margin_summary(
+                    "    switches",
+                    m_sw,
+                    len(interval_switches),
+                )
+                _print_margin_hist(
+                    "    all events",
+                    m_all,
+                    bin_width=margin_bin_width,
+                    bin_max=margin_bin_max,
+                )
+                _print_margin_hist(
+                    "    switches",
+                    m_sw,
+                    bin_width=margin_bin_width,
+                    bin_max=margin_bin_max,
+                )
 
     return 0
 

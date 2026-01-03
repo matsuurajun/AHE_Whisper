@@ -1,0 +1,31 @@
+#false_host_199_202.wav（197–204s）
+SPEAKER_00: GUEST
+結構ネックになったりもしています。
+
+SPEAKER_01: HOST
+先ほどおっしゃっていた、
+
+
+#false_host_243_246.wav（241–248s）
+SPEAKER_00: GUEST
+社内でお話しされるケースが多いようです。
+
+SPEAKER_01:HOST
+結構、最近入
+
+
+#false_host_309_315.wav
+SPEAKER_00: GUEST
+思ったので、出会って割とすぐここだというふうに決めました。
+
+SPEAKER_01:HOST
+ありがとうございます
+
+
+#false_host_376_383.wav
+SPEAKER_00: GUEST
+という意味合いで、わざわざ前のに戻す意味がないというご飯ですね。
+
+#false_host_409_413.wav
+SPEAKER_00: GUEST
+カスタマー・サクセスという役割は導入いただいている企業様向けの
