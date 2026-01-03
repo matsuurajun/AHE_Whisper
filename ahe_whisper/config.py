@@ -124,7 +124,7 @@ class AlignerConfig:
     beta: float = 0.8    # 話者確率 spk_probs の重み
     gamma: float = 0.5    # word_cost の重み
 
-    delta_switch: float = 1.0
+    delta_switch: float = 1.2
     non_speech_th: float = 0.02
     grid_hz: int = 50
 
@@ -169,7 +169,7 @@ class AlignerConfig:
     # switch_cp_floor_uncertain > 0 のとき、cp_scale の下限を
     #   floor = switch_cp_floor_uncertain * (1 - clamp(p_margin,0,1))^2
     # で与える（=曖昧なほど下限が上がる）。0.0 なら従来どおり。
-    switch_cp_floor_uncertain: float = 0.3
+    switch_cp_floor_uncertain: float = 1.0
 
     # --- NEW: posterior-margin gate for switch penalty (anti-dictatorship switch) ---
     # そのフレームの posterior argmax 話者へ「侵入」するとき、
@@ -227,7 +227,7 @@ class AlignerConfig:
     # --- NEW: Titanet posterior calibration (peakiness control) ---
     # posterior_temperature > 1.0 で分布をフラット化（softmax 温度スケーリング相当）。
     # 入力 spk_probs は確率 (行和=1) 前提で、p^(1/T) により温度を適用する。
-    posterior_temperature: float = 1.5
+    posterior_temperature: float = 2.0
     # 一様分布との混合率 λ（0.0=無効）。p'=(1-λ)p+λ/K。
     posterior_uniform_mix: float = 0.05
     # 話者 posterior の“音響証拠”の強さを調整する係数（p^w で近似、1.0=無効）。
