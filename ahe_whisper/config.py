@@ -311,9 +311,17 @@ class AlignerConfig:
 
     # --- NEW: boundary refinement (short-window + local DP) ---
     boundary_refine_enable: bool = True
-    boundary_refine_preset: str = "conservative"
+    boundary_refine_preset: str = "default"
     boundary_refine_backend_required: Optional[str] = None
-    boundary_refine_params: BoundaryRefineParams = field(default_factory=BoundaryRefineParams)
+    boundary_refine_params: BoundaryRefineParams = field(
+        default_factory=lambda: BoundaryRefineParams(
+            max_candidates=30,
+            window_sec=0.8,
+            short_win_sec=0.4,
+            short_hop_sec=0.2,
+            local_dp_switch_scale=0.6,
+        )
+    )
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.non_speech_th <= 1.0):
