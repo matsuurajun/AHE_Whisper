@@ -7,6 +7,7 @@ import json
 import time
 import math
 import bisect
+from dataclasses import dataclass
 
 import numpy as np
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,6 +57,15 @@ _SWITCH_LEN_THRESHOLD = 1.0   # これ以下の長さのランからのスイッ
 _SWITCH_LEN_SCALE = 0.35      # 超過 1 秒あたりの追加係数（従来 0.2 から強化）
 _SWITCH_LEN_CAP = 8.0         # 追加で見る最大秒数（従来 5.0 から拡大）
 
+@dataclass
+class AlignmentTrace:
+    segments: List[Dict[str, Any]]
+    frame_path: np.ndarray
+    grid_times: np.ndarray
+    spk_probs: np.ndarray
+    vad_probs: np.ndarray
+    switch_events: List[Dict[str, Any]]
+
 
 class OverlapDPAligner:
     def __init__(self, config: AlignerConfig) -> None:
@@ -70,6 +80,7 @@ class OverlapDPAligner:
         self.ten_weight: float = getattr(config, "ten_weight", 0.0)
         # align() 呼び出しごとにセットされる TEN スコア列（[-1, 1]）
         self._ten_score: Optional[np.ndarray] = None
+        self._last_align_info: Dict[str, Any] = {}
 
     def align(
         self,
@@ -80,6 +91,7 @@ class OverlapDPAligner:
         ten_probs: Optional[np.ndarray] = None,
     ) -> List[Tuple[float, float, int]]:
         _emit_sentinel_entry("OverlapDPAligner.align")
+        self._last_align_info = {}
 
         # Optional: tiny arg summary for debugging (kept out of default noise)
         if (
@@ -996,129 +1008,41 @@ class OverlapDPAligner:
         if use_silence_reset and runlen_reset_count > 0:
             logger.info("[RUNLEN-RESET-SUMMARY] %d silence zones triggered runlen reset", runlen_reset_count)
 
-        # === セグメント生成 ===
-        segments: List[Tuple[float, float, int]] = []
-        if num_frames > 0:
-            # 無音区間を検出（VAD確率が低い箇所）
-            silence_threshold = 0.3  # VAD確率がこれ以下を無音とみなす
-            min_silence_duration = 1.0  # 最小無音区間長（秒）
-            max_segment_duration = 30.0  # 最大セグメント長（秒）
-
-            # 無音区間の検出
-            is_silence = vad_probs < silence_threshold
-            silence_starts: List[int] = []
-            silence_ends: List[int] = []
-
-            in_silence = False
-            silence_start_idx = 0
-
-            for t in range(len(is_silence)):
-                if is_silence[t] and not in_silence:
-                    # 無音区間開始
-                    silence_start_idx = t
-                    in_silence = True
-                elif not is_silence[t] and in_silence:
-                    # 無音区間終了
-                    silence_duration = grid_times[t] - grid_times[silence_start_idx]
-                    if silence_duration >= min_silence_duration:
-                        silence_starts.append(silence_start_idx)
-                        silence_ends.append(t)
-                    in_silence = False
-
-            # セグメント生成
-            segment_start_time = float(grid_times[0])
-            current_speaker = int(final_path[0])
-
-            # logger.debug("[SEGMENT-DEBUG] Detected %d silence periods", len(silence_starts))
-
-            # 話者変化点と無音区間を使ってセグメントを分割
-            for t in range(1, num_frames):
-                current_time = float(grid_times[t])
-                segment_duration = current_time - segment_start_time
-
-                # セグメント分割条件
-                should_split = False
-                split_reason = ""
-
-                # 1. 話者が変わった
-                if int(final_path[t]) != current_speaker:
-                    should_split = True
-                    split_reason = "speaker_change"
-
-                # 2. 無音区間の中央付近
-                for i, (s_start, s_end) in enumerate(zip(silence_starts, silence_ends)):
-                    if s_start <= t <= s_end and segment_duration > 5.0:  # 5秒以上のセグメント
-                        should_split = True
-                        split_reason = f"silence_{i}"
-                        break
-
-                # 3. セグメントが長すぎる
-                if segment_duration >= max_segment_duration:
-                    should_split = True
-                    split_reason = "max_duration"
-
-                if should_split:
-                    segments.append((segment_start_time, current_time, current_speaker))
-                    logger.info(
-                        "[SEGMENT] %.2f-%.2fs, speaker=%d, reason=%s",
-                        segment_start_time,
-                        current_time,
-                        current_speaker,
-                        split_reason
-                    )
-
-                    # 次のセグメント開始
-                    segment_start_time = current_time
-                    current_speaker = int(final_path[t])
-
-            # 最後のセグメント
-            end_time = float(grid_times[-1])
-            segments.append((segment_start_time, end_time, current_speaker))
-            logger.info("[SEGMENT-FINAL] %.2f-%.2fs, speaker=%d", segment_start_time, end_time, current_speaker)
-
-        # === フォールバック: セグメントが少なすぎる場合 ===
-        if len(segments) <= 1 and num_frames > 0:
-            logger.info("[FALLBACK] Too few segments, creating artificial splits")
-            segments = []
-            segment_duration = 20.0  # 20秒ごとに分割
-
-            # 話者ごとの平均確率を計算
-            avg_spk_probs = np.mean(spk_probs, axis=0)
-            dominant_speaker = int(np.argmax(avg_spk_probs))
-
-            total_duration = float(grid_times[-1] - grid_times[0])
-            num_segments = max(1, int(total_duration / segment_duration))
-
-            for i in range(num_segments):
-                start_time = float(grid_times[0] + i * segment_duration)
-                end_time = float(min(grid_times[-1], start_time + segment_duration))
-
-                # この区間の話者を決定
-                start_idx = int(np.searchsorted(grid_times, start_time))
-                end_idx = int(np.searchsorted(grid_times, end_time))
-                if end_idx > start_idx:
-                    segment_path = final_path[start_idx:end_idx]
-                    # 最頻値を話者とする
-                    speaker = int(np.median(segment_path))
-                else:
-                    speaker = dominant_speaker
-
-                segments.append((start_time, end_time, speaker))
-                logger.info("[FALLBACK-SEGMENT] %.2f-%.2fs, speaker=%d", start_time, end_time, speaker)
-
-        # --- Boundary snapshot exporter (disabled by default) ---
-        self._maybe_export_boundary_snap(
+        segments = self._build_segments_from_path(
+            final_path=final_path,
             grid_times=grid_times,
             spk_probs=spk_probs,
-            spk_emit=spk_emit,
             vad_probs=vad_probs,
-            final_path=final_path,
-            beta_t=beta_t,
-            lexical_scales=lexical_scales,
-            cp_t=cp_t,
-            word_info=word_info,
-            frame_emission_mode=frame_emission_mode,
         )
+
+        self._last_align_info = {
+            "segments": segments,
+            "frame_path": final_path,
+            "grid_times": grid_times,
+            "spk_probs": spk_probs,
+            "vad_probs": vad_probs,
+            "spk_emit": spk_emit,
+            "beta_t": beta_t,
+            "lexical_scales": lexical_scales,
+            "cp_t": cp_t,
+            "frame_emission_mode": frame_emission_mode,
+            "word_info": word_info,
+        }
+
+        # --- Boundary snapshot exporter (disabled by default) ---
+        if not bool(getattr(self.config, "boundary_refine_enable", False)):
+            self._maybe_export_boundary_snap(
+                grid_times=grid_times,
+                spk_probs=spk_probs,
+                spk_emit=spk_emit,
+                vad_probs=vad_probs,
+                final_path=final_path,
+                beta_t=beta_t,
+                lexical_scales=lexical_scales,
+                cp_t=cp_t,
+                word_info=word_info,
+                frame_emission_mode=frame_emission_mode,
+            )
 
         logger.info(
             "[ALIGNER-RESULT] Generated %d segments covering %.1fs",
@@ -1126,6 +1050,182 @@ class OverlapDPAligner:
             (segments[-1][1] if segments else 0.0),
         )
         return segments
+
+    def align_with_trace(
+        self,
+        word_info: List[Dict[str, Any]],
+        vad_probs: np.ndarray,
+        spk_probs: np.ndarray,
+        grid_times: np.ndarray,
+        ten_probs: Optional[np.ndarray] = None,
+    ) -> AlignmentTrace:
+        segments = self.align(
+            word_info=word_info,
+            vad_probs=vad_probs,
+            spk_probs=spk_probs,
+            grid_times=grid_times,
+            ten_probs=ten_probs,
+        )
+
+        last_info = self._last_align_info or {}
+        frame_path = np.asarray(last_info.get("frame_path", np.asarray([], dtype=np.int32)))
+        grid_out = np.asarray(last_info.get("grid_times", grid_times))
+        spk_out = np.asarray(last_info.get("spk_probs", spk_probs))
+        vad_out = np.asarray(last_info.get("vad_probs", vad_probs))
+
+        seg_dicts: List[Dict[str, Any]] = []
+        if segments and isinstance(segments[0], (list, tuple)):
+            seg_dicts = [
+                {"start": float(s), "end": float(e), "speaker": f"SPEAKER_{int(spk):02d}"}
+                for s, e, spk in segments
+            ]
+        elif isinstance(segments, list):
+            seg_dicts = [dict(seg) for seg in segments]  # type: ignore[arg-type]
+
+        switch_events: List[Dict[str, Any]] = []
+        if frame_path.size > 1 and grid_out.size == frame_path.size:
+            sw = np.where(frame_path[1:] != frame_path[:-1])[0]
+            for j in sw:
+                idx = int(j) + 1
+                switch_events.append(
+                    {
+                        "frame": idx,
+                        "time": float(grid_out[idx]),
+                        "prev_speaker": int(frame_path[idx - 1]),
+                        "new_speaker": int(frame_path[idx]),
+                    }
+                )
+
+        return AlignmentTrace(
+            segments=seg_dicts,
+            frame_path=frame_path,
+            grid_times=grid_out,
+            spk_probs=spk_out,
+            vad_probs=vad_out,
+            switch_events=switch_events,
+        )
+
+    def local_dp_refine(
+        self,
+        base_path: np.ndarray,
+        word_info: List[Dict[str, Any]],
+        vad_probs: np.ndarray,
+        spk_probs_global: np.ndarray,
+        spk_probs_local: np.ndarray,
+        local_grid_indices: np.ndarray,
+        grid_times: np.ndarray,
+        start_idx: int,
+        end_idx: int,
+        fixed_start_speaker: int,
+        fixed_end_speaker: int,
+    ) -> np.ndarray:
+        if base_path.size == 0:
+            return base_path
+        if spk_probs_global.ndim != 2:
+            return base_path
+
+        num_frames = int(base_path.size)
+        start_idx = int(max(0, min(start_idx, num_frames - 1)))
+        end_idx = int(max(start_idx, min(end_idx, num_frames - 1)))
+        window_len = int(end_idx - start_idx + 1)
+
+        params = (
+            self.config.resolve_boundary_refine_params()
+            if hasattr(self.config, "resolve_boundary_refine_params")
+            else None
+        )
+        min_frames = int(getattr(params, "local_dp_min_frames", 1) if params else 1)
+        if window_len < min_frames:
+            return base_path
+
+        if spk_probs_global.shape[0] != num_frames:
+            return base_path
+
+        window_probs = np.asarray(spk_probs_global[start_idx:end_idx + 1], dtype=np.float32).copy()
+        if spk_probs_local is not None and local_grid_indices is not None:
+            local_grid_indices = np.asarray(local_grid_indices, dtype=np.int32).reshape(-1)
+            if spk_probs_local.shape[0] != local_grid_indices.shape[0]:
+                logger.warning(
+                    "[LOCAL-DP] local_grid_indices mismatch: idx=%d probs=%d",
+                    local_grid_indices.shape[0],
+                    spk_probs_local.shape[0],
+                )
+                return base_path
+            for i, g_idx in enumerate(local_grid_indices):
+                if start_idx <= int(g_idx) <= end_idx:
+                    window_probs[int(g_idx) - start_idx] = spk_probs_local[i]
+
+        num_speakers = int(window_probs.shape[1])
+        if not (0 <= fixed_start_speaker < num_speakers) or not (0 <= fixed_end_speaker < num_speakers):
+            return base_path
+
+        eps = 1e-12
+        _env_mode_raw = os.environ.get("AHE_FRAME_EMISSION_MODE", "").strip()
+        _env_mode = _env_mode_raw.lower()
+        _cfg_mode = str(getattr(self.config, "frame_emission_mode", "")).strip().lower()
+        frame_emission_mode = (_env_mode if _env_mode else (_cfg_mode if _cfg_mode else "prob"))
+        if frame_emission_mode in ("log", "logp", "logprob", "log-prob", "log_prob"):
+            spk_emit = np.log(np.clip(window_probs, eps, 1.0)).astype(np.float32)
+        else:
+            spk_emit = np.asarray(window_probs, dtype=np.float32)
+
+        vad_window = np.asarray(vad_probs[start_idx:end_idx + 1], dtype=np.float32)
+        word_costs = self._precompute_word_costs(word_info, grid_times)
+        if word_costs.shape[0] == grid_times.shape[0]:
+            word_window = np.asarray(word_costs[start_idx:end_idx + 1], dtype=np.float32)
+        else:
+            word_window = np.ones((window_len,), dtype=np.float32)
+
+        lexical_scales = self._compute_lexical_switch_scales(word_info, grid_times)
+        if lexical_scales.shape[0] == grid_times.shape[0]:
+            lex_window = np.asarray(lexical_scales[start_idx:end_idx + 1], dtype=np.float32)
+        else:
+            lex_window = np.ones((window_len,), dtype=np.float32)
+
+        local_switch_scale = float(getattr(params, "local_dp_switch_scale", 1.0) if params else 1.0)
+        eye = np.eye(num_speakers, dtype=np.float32)
+        cost = np.full((window_len, num_speakers), -1.0e30, dtype=np.float32)
+        path = np.full((window_len, num_speakers), -1, dtype=np.int32)
+
+        base0 = float(self.alpha) * float(vad_window[0]) - float(self.gamma) * float(word_window[0])
+        cost[0, fixed_start_speaker] = -(
+            base0 + float(self.beta) * float(spk_emit[0, fixed_start_speaker])
+        )
+
+        for t in range(1, window_len):
+            vad_score = float(self.alpha) * float(vad_window[t])
+            word_score = -float(self.gamma) * float(word_window[t])
+            lex_scale = float(lex_window[t]) if lex_window is not None else 1.0
+            switch_penalty = float(self.delta_switch) * local_switch_scale * lex_scale
+            for k in range(num_speakers):
+                spk_score = float(self.beta) * float(spk_emit[t, k])
+                base_score = vad_score + spk_score + word_score
+                prev_scores = cost[t - 1, :] - switch_penalty * (1.0 - eye[k])
+                best_prev_k = int(np.argmax(prev_scores))
+                cost[t, k] = float(prev_scores[best_prev_k]) + base_score
+                path[t, k] = best_prev_k
+
+        if not np.isfinite(cost[-1, fixed_end_speaker]):
+            return base_path
+
+        refined_local = np.zeros((window_len,), dtype=np.int32)
+        refined_local[-1] = int(fixed_end_speaker)
+        for t in range(window_len - 2, -1, -1):
+            refined_local[t] = int(path[t + 1, refined_local[t + 1]])
+            if refined_local[t] < 0:
+                return base_path
+
+        refined = np.asarray(base_path, dtype=np.int32).copy()
+        refined[start_idx:end_idx + 1] = refined_local
+        diff_frames = int(np.sum(refined[start_idx:end_idx + 1] != base_path[start_idx:end_idx + 1]))
+        logger.info(
+            "[LOCAL-DP] window=%d-%d frames=%d diff=%d",
+            start_idx,
+            end_idx,
+            window_len,
+            diff_frames,
+        )
+        return refined
 
     def _refine_speaker_path_with_posteriors(
         self,
@@ -1257,6 +1357,123 @@ class OverlapDPAligner:
                 smoothed[mid_start:mid_end + 1] = prev_spk
 
         return smoothed
+
+    def _build_segments_from_path(
+        self,
+        final_path: np.ndarray,
+        grid_times: np.ndarray,
+        spk_probs: np.ndarray,
+        vad_probs: np.ndarray,
+    ) -> List[Tuple[float, float, int]]:
+        num_frames = int(final_path.size)
+        segments: List[Tuple[float, float, int]] = []
+        if num_frames > 0:
+            # 無音区間を検出（VAD確率が低い箇所）
+            silence_threshold = 0.3  # VAD確率がこれ以下を無音とみなす
+            min_silence_duration = 1.0  # 最小無音区間長（秒）
+            max_segment_duration = 30.0  # 最大セグメント長（秒）
+
+            # 無音区間の検出
+            is_silence = vad_probs < silence_threshold
+            silence_starts: List[int] = []
+            silence_ends: List[int] = []
+
+            in_silence = False
+            silence_start_idx = 0
+
+            for t in range(len(is_silence)):
+                if is_silence[t] and not in_silence:
+                    # 無音区間開始
+                    silence_start_idx = t
+                    in_silence = True
+                elif not is_silence[t] and in_silence:
+                    # 無音区間終了
+                    silence_duration = grid_times[t] - grid_times[silence_start_idx]
+                    if silence_duration >= min_silence_duration:
+                        silence_starts.append(silence_start_idx)
+                        silence_ends.append(t)
+                    in_silence = False
+
+            # セグメント生成
+            segment_start_time = float(grid_times[0])
+            current_speaker = int(final_path[0])
+
+            # 話者変化点と無音区間を使ってセグメントを分割
+            for t in range(1, num_frames):
+                current_time = float(grid_times[t])
+                segment_duration = current_time - segment_start_time
+
+                # セグメント分割条件
+                should_split = False
+                split_reason = ""
+
+                # 1. 話者が変わった
+                if int(final_path[t]) != current_speaker:
+                    should_split = True
+                    split_reason = "speaker_change"
+
+                # 2. 無音区間の中央付近
+                for i, (s_start, s_end) in enumerate(zip(silence_starts, silence_ends)):
+                    if s_start <= t <= s_end and segment_duration > 5.0:  # 5秒以上のセグメント
+                        should_split = True
+                        split_reason = f"silence_{i}"
+                        break
+
+                # 3. セグメントが長すぎる
+                if segment_duration >= max_segment_duration:
+                    should_split = True
+                    split_reason = "max_duration"
+
+                if should_split:
+                    segments.append((segment_start_time, current_time, current_speaker))
+                    logger.info(
+                        "[SEGMENT] %.2f-%.2fs, speaker=%d, reason=%s",
+                        segment_start_time,
+                        current_time,
+                        current_speaker,
+                        split_reason
+                    )
+
+                    # 次のセグメント開始
+                    segment_start_time = current_time
+                    current_speaker = int(final_path[t])
+
+            # 最後のセグメント
+            end_time = float(grid_times[-1])
+            segments.append((segment_start_time, end_time, current_speaker))
+            logger.info("[SEGMENT-FINAL] %.2f-%.2fs, speaker=%d", segment_start_time, end_time, current_speaker)
+
+        # === フォールバック: セグメントが少なすぎる場合 ===
+        if len(segments) <= 1 and num_frames > 0:
+            logger.info("[FALLBACK] Too few segments, creating artificial splits")
+            segments = []
+            segment_duration = 20.0  # 20秒ごとに分割
+
+            # 話者ごとの平均確率を計算
+            avg_spk_probs = np.mean(spk_probs, axis=0)
+            dominant_speaker = int(np.argmax(avg_spk_probs))
+
+            total_duration = float(grid_times[-1] - grid_times[0])
+            num_segments = max(1, int(total_duration / segment_duration))
+
+            for i in range(num_segments):
+                start_time = float(grid_times[0] + i * segment_duration)
+                end_time = float(min(grid_times[-1], start_time + segment_duration))
+
+                # この区間の話者を決定
+                start_idx = int(np.searchsorted(grid_times, start_time))
+                end_idx = int(np.searchsorted(grid_times, end_time))
+                if end_idx > start_idx:
+                    segment_path = final_path[start_idx:end_idx]
+                    # 最頻値を話者とする
+                    speaker = int(np.median(segment_path))
+                else:
+                    speaker = dominant_speaker
+
+                segments.append((start_time, end_time, speaker))
+                logger.info("[FALLBACK-SEGMENT] %.2f-%.2fs, speaker=%d", start_time, end_time, speaker)
+
+        return segments
 
     def _compute_lexical_switch_scales(
         self,
@@ -1517,6 +1734,8 @@ class OverlapDPAligner:
         cp_t: Optional[np.ndarray],
         word_info: List[Dict[str, Any]],
         frame_emission_mode: str,
+        original_path: Optional[np.ndarray] = None,
+        refined_path: Optional[np.ndarray] = None,
     ) -> None:
         # Enable via env only (simple & explicit)
         enabled = os.environ.get("AHE_BOUNDARY_SNAP", "0").strip().lower() in ("1", "true", "yes")
@@ -1533,10 +1752,15 @@ class OverlapDPAligner:
             logger.warning("[BOUNDARY-SNAP] cannot create out_dir=%s: %s", out_dir, exc)
             return
 
-        T = int(final_path.size)
+        path_used = refined_path if refined_path is not None else final_path
+        if path_used is None:
+            return
+        T = int(path_used.size)
         if T <= 2 or spk_probs.ndim != 2 or spk_probs.shape[0] != T:
             logger.warning("[BOUNDARY-SNAP] invalid shapes: T=%d spk_probs=%s", T, getattr(spk_probs, "shape", None))
             return
+        if original_path is not None and getattr(original_path, "size", None) != T:
+            original_path = None
 
         # --- derived signals for "real" transition penalty inspection (debug only) ---
         K = int(spk_probs.shape[1])
@@ -1544,7 +1768,7 @@ class OverlapDPAligner:
 
         runlen_sec = np.zeros(T, dtype=np.float32)
         for t in range(1, T):
-            if int(final_path[t]) == int(final_path[t - 1]):
+            if int(path_used[t]) == int(path_used[t - 1]):
                 runlen_sec[t] = runlen_sec[t - 1] + float(grid_times[t] - grid_times[t - 1])
 
         ten_score_t = getattr(self, "_ten_score", None)
@@ -1587,7 +1811,7 @@ class OverlapDPAligner:
         # events: switches and/or cp peaks
         events: List[Tuple[int, str]] = []
         if "switch" in mode:
-            sw = np.where(final_path[1:] != final_path[:-1])[0]
+            sw = np.where(path_used[1:] != path_used[:-1])[0]
             for j in sw:
                 events.append((int(j) + 1, "switch"))
 
@@ -1680,7 +1904,7 @@ class OverlapDPAligner:
             sw_runlen = 0
 
             if t > 0 and prev_state != cur_state:
-                sw_runlen = _runlen_end(final_path, t - 1)
+                sw_runlen = _runlen_end(path_used, t - 1)
                 excess = max(0, min(_SWITCH_LEN_CAP, sw_runlen - _SWITCH_LEN_THRESHOLD))
                 sw_pen_factor = 1.0 + _SWITCH_LEN_SCALE * float(excess)
 
@@ -1867,13 +2091,13 @@ class OverlapDPAligner:
                                 scale = 1.0
 
                             k_arg = int(p_argmax)
-                            if int(final_path[t]) == k_arg:
+                            if int(path_used[t]) == k_arg:
                                 post_to_scale_path = scale
                             post_to_scale_argmax = scale
                             post_to_scale_conf = conf
 
-                        prev_state = int(final_path[t - 1]) if t > 0 else int(final_path[t])
-                        cur_state = int(final_path[t])
+                        prev_state = int(path_used[t - 1]) if t > 0 else int(path_used[t])
+                        cur_state = int(path_used[t])
                         (
                             dp_add_total,
                             dp_add_vad,
@@ -1914,7 +2138,7 @@ class OverlapDPAligner:
                         fr = {
                             "t": float(grid_times[t]),
                             "i": int(t),
-                            "path_spk": int(final_path[t]),
+                            "path_spk": int(path_used[t]),
                             "vad": vad_v,
                             "p_top1": v1,
                             "p_top2": v2,
@@ -1956,14 +2180,16 @@ class OverlapDPAligner:
                                 "runlen": int(dp_sw_runlen_frames),
                             },
                         }
+                        if original_path is not None:
+                            fr["path_spk_original"] = int(original_path[t])
                         frames.append(fr)
 
                     words_meta = _collect_words(float(grid_times[idx])) if 0 <= idx < grid_times.size else []
                     words = [w.get("text", "") for w in words_meta]
                     words_text = "".join(words)
 
-                    path_old = int(final_path[idx - 1]) if etype == "switch" and idx > 0 else None
-                    path_new = int(final_path[idx]) if etype == "switch" and 0 <= idx < T else None
+                    path_old = int(path_used[idx - 1]) if etype == "switch" and idx > 0 else None
+                    path_new = int(path_used[idx]) if etype == "switch" and 0 <= idx < T else None
 
                     rec = {
                         "v": 2,
@@ -2014,6 +2240,15 @@ class OverlapDPAligner:
                         "words_meta": words_meta,
                         "frames": frames,
                     }
+                    if original_path is not None:
+                        rec["path_old_original"] = (
+                            int(original_path[idx - 1]) if etype == "switch" and idx > 0 else None
+                        )
+                        rec["path_new_original"] = (
+                            int(original_path[idx]) if etype == "switch" and 0 <= idx < T else None
+                        )
+                        rec["original_path"] = [int(v) for v in original_path[lo:hi]]
+                        rec["refined_path"] = [int(v) for v in path_used[lo:hi]]
                     f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except Exception as exc:
             logger.warning("[BOUNDARY-SNAP] export failed: %s", exc)

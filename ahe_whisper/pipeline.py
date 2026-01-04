@@ -24,6 +24,7 @@ from ahe_whisper.vbx_resegment import vbx_resegment
 from ahe_whisper.utils import get_metrics, add_metric, calculate_coverage_metrics
 from ahe_whisper.post_diar import sanitize_speaker_timeline
 from ahe_whisper.model_manager import ensure_model_available
+from ahe_whisper.boundary_refiner import run_boundary_refine
 
 LOGGER = logging.getLogger("ahe_whisper_worker")
 
@@ -637,13 +638,87 @@ def run(
             "None" if ten_probs is None else str(len(ten_probs)),
         )
 
-        speaker_segments = aligner.align(
+        trace = aligner.align_with_trace(
             words,
             vad_probs,
             spk_probs,
             grid_times,
             ten_probs=ten_probs,
         )
+        speaker_segments = trace.segments
+
+        if bool(getattr(config.aligner, "boundary_refine_enable", False)):
+            LOGGER.info(
+                "[BOUNDARY-REFINE] enabled preset=%s",
+                str(getattr(config.aligner, "boundary_refine_preset", "default")),
+            )
+
+            if backend in ("titanet", "speakernet"):
+                embed_fn = lambda chunks: sherpa_embed_batched(
+                    emb_extractor,
+                    chunks,
+                    sr,
+                    config.embedding,
+                )
+            else:
+                embed_fn = lambda chunks: er2v2_embed_batched(
+                    er2_sess,
+                    emb_model_path,
+                    chunks,
+                    sr,
+                    config.embedding,
+                )
+
+            refine_result = run_boundary_refine(
+                aligner=aligner,
+                frame_path=trace.frame_path,
+                grid_times=trace.grid_times,
+                spk_probs_global=trace.spk_probs,
+                vad_probs=trace.vad_probs,
+                word_info=words,
+                waveform=waveform,
+                sr=sr,
+                diarizer=diarizer,
+                speaker_centroids=speaker_centroids,
+                embed_fn=embed_fn,
+                backend=backend,
+                config=config.aligner,
+                switch_events=trace.switch_events,
+            )
+
+            if refine_result.refined_path is not None and refine_result.refined_path.size > 0:
+                if np.any(refine_result.refined_path != refine_result.original_path):
+                    speaker_segments = aligner._build_segments_from_path(
+                        final_path=refine_result.refined_path,
+                        grid_times=trace.grid_times,
+                        spk_probs=trace.spk_probs,
+                        vad_probs=trace.vad_probs,
+                    )
+
+                if os.environ.get("AHE_BOUNDARY_SNAP", "0").strip().lower() in ("1", "true", "yes"):
+                    last_info = getattr(aligner, "_last_align_info", {}) or {}
+                    spk_emit = last_info.get("spk_emit")
+                    beta_t = last_info.get("beta_t")
+                    lexical_scales = last_info.get("lexical_scales")
+                    cp_t = last_info.get("cp_t")
+                    frame_emission_mode = last_info.get("frame_emission_mode", "prob")
+                    if spk_emit is not None:
+                        aligner._maybe_export_boundary_snap(
+                            grid_times=trace.grid_times,
+                            spk_probs=trace.spk_probs,
+                            spk_emit=spk_emit,
+                            vad_probs=trace.vad_probs,
+                            final_path=refine_result.refined_path,
+                            beta_t=beta_t,
+                            lexical_scales=lexical_scales,
+                            cp_t=cp_t,
+                            word_info=words,
+                            frame_emission_mode=frame_emission_mode,
+                            original_path=refine_result.original_path,
+                            refined_path=refine_result.refined_path,
+                        )
+        else:
+            LOGGER.info("[BOUNDARY-REFINE] disabled")
         
         # --- normalize speaker_segments (tuple → dict) (★これを1回だけ) ---
         if speaker_segments and isinstance(speaker_segments[0], (list, tuple)):

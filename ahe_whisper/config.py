@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from dataclasses import dataclass, field, asdict, replace, fields
+from typing import List, Optional, Dict
 
 @dataclass
 class TranscriptionConfig:
@@ -116,6 +116,61 @@ class DiarizationConfig:
 @dataclass
 class VadConfig:
     window_size_samples: int = 512
+
+@dataclass
+class BoundaryRefineParams:
+    max_candidates: int = 40
+    merge_sec: float = 0.5
+    merge_max_window_sec: float = 2.0
+    window_sec: float = 1.0
+    candidate_use_switch: bool = True
+    candidate_use_lexical: bool = True
+    lexical_tokens: str = "?？。."
+    short_win_sec: float = 0.5
+    short_hop_sec: float = 0.25
+    use_local_dp: bool = True
+    local_dp_switch_scale: float = 0.3
+    local_dp_min_frames: int = 3
+
+    def __post_init__(self) -> None:
+        if self.max_candidates < 1:
+            raise ValueError(f"max_candidates must be >= 1, got {self.max_candidates}")
+        if self.merge_sec < 0.0:
+            raise ValueError(f"merge_sec must be >= 0, got {self.merge_sec}")
+        if self.merge_max_window_sec <= 0.0:
+            raise ValueError(f"merge_max_window_sec must be > 0, got {self.merge_max_window_sec}")
+        if self.window_sec <= 0.0:
+            raise ValueError(f"window_sec must be > 0, got {self.window_sec}")
+        if self.short_win_sec <= 0.0:
+            raise ValueError(f"short_win_sec must be > 0, got {self.short_win_sec}")
+        if self.short_hop_sec <= 0.0:
+            raise ValueError(f"short_hop_sec must be > 0, got {self.short_hop_sec}")
+        if self.local_dp_switch_scale < 0.0:
+            raise ValueError(f"local_dp_switch_scale must be >= 0, got {self.local_dp_switch_scale}")
+        if self.local_dp_min_frames < 1:
+            raise ValueError(f"local_dp_min_frames must be >= 1, got {self.local_dp_min_frames}")
+
+_BOUNDARY_REFINE_PRESETS: Dict[str, BoundaryRefineParams] = {
+    "default": BoundaryRefineParams(),
+    "conservative": BoundaryRefineParams(
+        max_candidates=20,
+        merge_sec=0.4,
+        merge_max_window_sec=1.5,
+        window_sec=0.8,
+        short_win_sec=0.4,
+        short_hop_sec=0.2,
+        local_dp_switch_scale=0.5,
+    ),
+    "aggressive": BoundaryRefineParams(
+        max_candidates=60,
+        merge_sec=0.6,
+        merge_max_window_sec=2.5,
+        window_sec=1.2,
+        short_win_sec=0.6,
+        short_hop_sec=0.3,
+        local_dp_switch_scale=0.2,
+    ),
+}
 
 @dataclass
 class AlignerConfig:
@@ -254,6 +309,12 @@ class AlignerConfig:
     # 新話者側ラン長がこの秒数未満のときは巻き戻しを行わない（ノイズ拡大防止）
     posterior_min_run_sec: float = 0.5
 
+    # --- NEW: boundary refinement (short-window + local DP) ---
+    boundary_refine_enable: bool = False
+    boundary_refine_preset: str = "default"
+    boundary_refine_backend_required: Optional[str] = None
+    boundary_refine_params: BoundaryRefineParams = field(default_factory=BoundaryRefineParams)
+
     def __post_init__(self) -> None:
         if not (0.0 <= self.non_speech_th <= 1.0):
             raise ValueError(f"non_speech_th must be in [0, 1], got {self.non_speech_th}")
@@ -348,6 +409,36 @@ class AlignerConfig:
             raise ValueError(
                 f"word_dp_gap_switch_scale must be >= 0, got {self.word_dp_gap_switch_scale}"
             )
+        if not isinstance(self.boundary_refine_enable, bool):
+            raise TypeError(
+                f"boundary_refine_enable must be bool, got {type(self.boundary_refine_enable).__name__}"
+            )
+        if not isinstance(self.boundary_refine_preset, str):
+            raise TypeError(
+                f"boundary_refine_preset must be str, got {type(self.boundary_refine_preset).__name__}"
+            )
+
+    @classmethod
+    def with_boundary_refine(cls, preset: str = "default", **overrides: float) -> "AlignerConfig":
+        cfg = cls()
+        cfg.boundary_refine_enable = True
+        cfg.boundary_refine_preset = preset
+        if overrides:
+            cfg.boundary_refine_params = BoundaryRefineParams(**overrides)
+        return cfg
+
+    def resolve_boundary_refine_params(self) -> BoundaryRefineParams:
+        preset_name = (self.boundary_refine_preset or "default").lower()
+        base = _BOUNDARY_REFINE_PRESETS.get(preset_name, _BOUNDARY_REFINE_PRESETS["default"])
+        params = replace(base)
+        overrides = getattr(self, "boundary_refine_params", None)
+        if overrides is None:
+            return params
+        default_params = _BOUNDARY_REFINE_PRESETS["default"]
+        if preset_name != "default" and overrides == default_params:
+            return params
+        override_values = {f.name: getattr(overrides, f.name) for f in fields(BoundaryRefineParams)}
+        return replace(params, **override_values)
 
 @dataclass
 class ExportConfig:
