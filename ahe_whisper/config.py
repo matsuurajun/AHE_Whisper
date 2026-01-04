@@ -311,7 +311,7 @@ class AlignerConfig:
 
     # --- NEW: boundary refinement (short-window + local DP) ---
     boundary_refine_enable: bool = True
-    boundary_refine_preset: str = "default"
+    boundary_refine_preset: str = "conservative"
     boundary_refine_backend_required: Optional[str] = None
     boundary_refine_params: BoundaryRefineParams = field(default_factory=BoundaryRefineParams)
 
