@@ -310,7 +310,7 @@ class AlignerConfig:
     posterior_min_run_sec: float = 0.5
 
     # --- NEW: boundary refinement (short-window + local DP) ---
-    boundary_refine_enable: bool = False
+    boundary_refine_enable: bool = True
     boundary_refine_preset: str = "default"
     boundary_refine_backend_required: Optional[str] = None
     boundary_refine_params: BoundaryRefineParams = field(default_factory=BoundaryRefineParams)
