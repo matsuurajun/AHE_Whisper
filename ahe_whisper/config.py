@@ -241,9 +241,9 @@ class AlignerConfig:
     # - entropy_norm = entropy / log(K) in [0,1]（K=話者数）
     # - margin は top1-top2 in [0,1]
     # 互換性: mult=1.0 なら従来と同じ。
-    switch_uncertain_penalty_mult: float = 1.4
+    switch_uncertain_penalty_mult: float = 1.8
     switch_uncertain_entropy_norm_th: float = 0.99
-    switch_uncertain_margin_th: float = 0.2
+    switch_uncertain_margin_th: float = 0.15
 
     # Uncertainty boost を VAD(speech_mask) でゲートするか。
     # False: VAD が境界で落ちるケースでも uncertain 判定を有効にする（境界スイッチ遅延の診断/改善向け）。
