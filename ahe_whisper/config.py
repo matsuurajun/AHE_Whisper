@@ -314,14 +314,14 @@ class AlignerConfig:
     # True のとき、DP 最終パスに対して posteriors を用いたローカル realign を行う。
     use_posterior_refine: bool = True
     # 巻き戻し最大長（秒）
-    posterior_max_rollback_sec: float = 1.0
+    posterior_max_rollback_sec: float = 1.5
     # 「新話者 posterior - 旧話者 posterior」がこの margin を超えたら巻き戻し候補とみなす
-    posterior_margin: float = 0.02
+    posterior_margin: float = 0.015
     # 新話者側ラン長がこの秒数未満のときは巻き戻しを行わない（ノイズ拡大防止）
     posterior_min_run_sec: float = 0.5
 
     # --- NEW: boundary refinement (short-window + local DP) ---
-    boundary_refine_enable: bool = False
+    boundary_refine_enable: bool = True
     boundary_refine_preset: str = "default"
     boundary_refine_backend_required: Optional[str] = None
     boundary_refine_params: BoundaryRefineParams = field(
