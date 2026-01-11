@@ -314,6 +314,17 @@ class OverlapDPAligner:
             p_margin_t = None
             p_entropy_norm_t = None
 
+        spk_margin_t = None
+        if num_speakers >= 2:
+            try:
+                spk_term = spk_emit * beta_t.reshape(-1, 1)
+                top2 = np.partition(spk_term, -2, axis=1)[:, -2:]
+                top1 = np.max(top2, axis=1)
+                top2v = np.min(top2, axis=1)
+                spk_margin_t = (top1 - top2v).astype(np.float32)
+            except Exception:
+                spk_margin_t = None
+
         switch_post_k = float(getattr(self.config, "switch_post_k", 0.0))
         switch_post_margin_th = float(getattr(self.config, "switch_post_margin_th", 0.5))
         if switch_post_k > 0.0:
@@ -331,6 +342,36 @@ class OverlapDPAligner:
         switch_uncertain_use_speech_mask = bool(
             getattr(self.config, "switch_uncertain_use_speech_mask", False)
         )
+        switch_hysteresis_sec = float(getattr(self.config, "switch_hysteresis_sec", 0.0))
+        switch_hysteresis_mult = float(getattr(self.config, "switch_hysteresis_mult", 1.0))
+        if switch_hysteresis_sec < 0.0:
+            switch_hysteresis_sec = 0.0
+        if switch_hysteresis_mult < 1.0:
+            switch_hysteresis_mult = 1.0
+        use_switch_hysteresis = switch_hysteresis_sec > 0.0 and switch_hysteresis_mult > 1.0
+        if use_switch_hysteresis:
+            logger.info(
+                "[SWITCH-HYSTERESIS] enabled=True sec=%.2f mult=%.2f",
+                switch_hysteresis_sec,
+                switch_hysteresis_mult,
+            )
+        switch_spk_margin_th = float(getattr(self.config, "switch_spk_margin_th", 0.0))
+        switch_spk_margin_mult = float(getattr(self.config, "switch_spk_margin_mult", 1.0))
+        if switch_spk_margin_th < 0.0:
+            switch_spk_margin_th = 0.0
+        if switch_spk_margin_mult < 1.0:
+            switch_spk_margin_mult = 1.0
+        use_switch_spk_margin = (
+            switch_spk_margin_th > 0.0
+            and switch_spk_margin_mult > 1.0
+            and spk_margin_t is not None
+        )
+        if use_switch_spk_margin:
+            logger.info(
+                "[SWITCH-SPK-MARGIN] enabled=True th=%.3f mult=%.2f",
+                switch_spk_margin_th,
+                switch_spk_margin_mult,
+            )
         speech_th_for_uncertain = float(
             max(
                 float(self.non_speech_th),
@@ -795,6 +836,26 @@ class OverlapDPAligner:
                 ):
                     uncertain_scale = float(switch_uncertain_penalty_mult)
 
+            # Hysteresis: discourage re-switching shortly after a switch (oscillation suppression).
+            hysteresis_scale = 1.0
+            if use_switch_hysteresis and prev_runlen is not None:
+                try:
+                    hysteresis_scale = np.where(
+                        prev_runlen < switch_hysteresis_sec,
+                        switch_hysteresis_mult,
+                        1.0,
+                    ).astype(np.float32)
+                except Exception:
+                    hysteresis_scale = 1.0
+
+            spk_margin_scale = 1.0
+            if use_switch_spk_margin and spk_margin_t is not None:
+                try:
+                    if float(spk_margin_t[t]) <= switch_spk_margin_th:
+                        spk_margin_scale = float(switch_spk_margin_mult)
+                except Exception:
+                    spk_margin_scale = 1.0
+
             switch_penalties = (
                 self.delta_switch
                 * penalty_factor
@@ -802,6 +863,8 @@ class OverlapDPAligner:
                 * lexical_scale_t
                 * cp_scale
                 * uncertain_scale
+                * hysteresis_scale
+                * spk_margin_scale
             )  # shape: (num_speakers,)
 
             # --- DEBUG: lexical prior が実際に使われたフレームだけログ ---
@@ -974,7 +1037,15 @@ class OverlapDPAligner:
                             if ls.size == num_frames:
                                 lex_vec = ls[1:]
 
-                        eff_sw_pen = float(self.delta_switch) * pen_fac * ten_scale_vec * lex_vec
+                        hyst_vec = np.ones(num_frames - 1, dtype=np.float32)
+                        if use_switch_hysteresis:
+                            hyst_vec = np.where(
+                                rl < switch_hysteresis_sec,
+                                switch_hysteresis_mult,
+                                1.0,
+                            ).astype(np.float32)
+
+                        eff_sw_pen = float(self.delta_switch) * pen_fac * ten_scale_vec * lex_vec * hyst_vec
                         sw_pen = eff_sw_pen[sw_mask].astype(np.float32)
 
                     def _q(x: np.ndarray, qv: float) -> float:
@@ -1789,6 +1860,20 @@ class OverlapDPAligner:
         switch_uncertain_penalty_mult = float(getattr(self.config, "switch_uncertain_penalty_mult", 1.0))
         switch_uncertain_entropy_norm_th = float(getattr(self.config, "switch_uncertain_entropy_norm_th", 1.0))
         switch_uncertain_margin_th = float(getattr(self.config, "switch_uncertain_margin_th", 0.0))
+        switch_hysteresis_sec = float(getattr(self.config, "switch_hysteresis_sec", 0.0))
+        switch_hysteresis_mult = float(getattr(self.config, "switch_hysteresis_mult", 1.0))
+        switch_spk_margin_th = float(getattr(self.config, "switch_spk_margin_th", 0.0))
+        switch_spk_margin_mult = float(getattr(self.config, "switch_spk_margin_mult", 1.0))
+        if switch_hysteresis_sec < 0.0:
+            switch_hysteresis_sec = 0.0
+        if switch_hysteresis_mult < 1.0:
+            switch_hysteresis_mult = 1.0
+        use_switch_hysteresis = switch_hysteresis_sec > 0.0 and switch_hysteresis_mult > 1.0
+        if switch_spk_margin_th < 0.0:
+            switch_spk_margin_th = 0.0
+        if switch_spk_margin_mult < 1.0:
+            switch_spk_margin_mult = 1.0
+        use_switch_spk_margin = switch_spk_margin_th > 0.0 and switch_spk_margin_mult > 1.0
         speech_th_for_uncertain = float(
             max(
                 float(self.non_speech_th),
@@ -1892,6 +1977,7 @@ class OverlapDPAligner:
             cp_scale_v: float,
             uncertain_scale_v: float,
             post_to_scale_v,
+            spk_margin_v,
         ):
             vad_score = float(self.alpha) * float(vad_v) if vad_v is not None else 0.0
             spk_score = float(beta_t[t]) * float(spk_emit[t, cur_state])
@@ -1900,13 +1986,24 @@ class OverlapDPAligner:
             sw_pen_applied = 0.0
             sw_pen_base = 0.0
             sw_pen_factor = 1.0
+            sw_hysteresis_scale = 1.0
             sw_ten_scale = 1.0
+            sw_spk_margin_scale = 1.0
             sw_runlen = 0
 
             if t > 0 and prev_state != cur_state:
                 sw_runlen = _runlen_end(path_used, t - 1)
                 excess = max(0, min(_SWITCH_LEN_CAP, sw_runlen - _SWITCH_LEN_THRESHOLD))
                 sw_pen_factor = 1.0 + _SWITCH_LEN_SCALE * float(excess)
+
+                if use_switch_hysteresis and t - 1 < runlen_sec.size:
+                    sw_runlen_sec = float(runlen_sec[t - 1])
+                    if sw_runlen_sec < float(switch_hysteresis_sec):
+                        sw_hysteresis_scale = float(switch_hysteresis_mult)
+
+                if use_switch_spk_margin and spk_margin_v is not None:
+                    if float(spk_margin_v) <= float(switch_spk_margin_th):
+                        sw_spk_margin_scale = float(switch_spk_margin_mult)
 
                 if self._ten_score is not None:
                     sw_ten_scale = 1.0 + float(self.ten_weight) * float(self._ten_score[t])
@@ -1917,7 +2014,9 @@ class OverlapDPAligner:
                 sw_pen_base = (
                     float(self.delta_switch)
                     * float(sw_pen_factor)
+                    * float(sw_hysteresis_scale)
                     * float(sw_ten_scale)
+                    * float(sw_spk_margin_scale)
                     * float(lex_v)
                     * float(cp_scale_v)
                     * float(uncertain_scale_v)
@@ -1933,7 +2032,9 @@ class OverlapDPAligner:
                 sw_pen_applied,
                 sw_pen_base,
                 sw_pen_factor,
+                sw_hysteresis_scale,
                 sw_ten_scale,
+                sw_spk_margin_scale,
                 sw_runlen,
             )
 
@@ -1990,7 +2091,9 @@ class OverlapDPAligner:
                     dp_evt_sw_pen = None
                     dp_evt_sw_pen_base = None
                     dp_evt_sw_pen_factor = None
+                    dp_evt_sw_hysteresis_scale = None
                     dp_evt_sw_ten_scale = None
+                    dp_evt_sw_spk_margin_scale = None
                     dp_evt_sw_runlen = None
                     dp_evt_cp_scale = None
                     dp_evt_uncertain_scale = None
@@ -2106,7 +2209,9 @@ class OverlapDPAligner:
                             dp_sw_pen,
                             dp_sw_pen_base,
                             dp_sw_pen_factor,
+                            dp_sw_hysteresis_scale,
                             dp_sw_ten_scale,
+                            dp_sw_spk_margin_scale,
                             dp_sw_runlen_frames,
                         ) = _calc_dp_terms(
                             t,
@@ -2117,6 +2222,7 @@ class OverlapDPAligner:
                             cp_scale,
                             uncertain_scale,
                             post_to_scale_path,
+                            spk_margin,
                         )
 
                         if t == idx:
@@ -2127,7 +2233,9 @@ class OverlapDPAligner:
                             dp_evt_sw_pen = dp_sw_pen
                             dp_evt_sw_pen_base = dp_sw_pen_base
                             dp_evt_sw_pen_factor = dp_sw_pen_factor
+                            dp_evt_sw_hysteresis_scale = dp_sw_hysteresis_scale
                             dp_evt_sw_ten_scale = dp_sw_ten_scale
+                            dp_evt_sw_spk_margin_scale = dp_sw_spk_margin_scale
                             dp_evt_sw_runlen = dp_sw_runlen_frames
                             dp_evt_cp_scale = cp_scale
                             dp_evt_uncertain_scale = uncertain_scale
@@ -2171,7 +2279,9 @@ class OverlapDPAligner:
                                 "sw_pen": float(dp_sw_pen),
                                 "sw_pen_base": float(dp_sw_pen_base),
                                 "sw_pen_factor": float(dp_sw_pen_factor),
+                                "sw_hysteresis_scale": float(dp_sw_hysteresis_scale),
                                 "sw_ten_scale": float(dp_sw_ten_scale),
+                                "sw_spk_margin_scale": float(dp_sw_spk_margin_scale),
                                 "cp_scale": float(cp_scale) if cp_scale is not None else None,
                                 "uncertain_scale": float(uncertain_scale),
                                 "lex_scale": float(lex_scale_v) if lex_scale_v is not None else None,
@@ -2213,7 +2323,9 @@ class OverlapDPAligner:
                             "sw_pen": float(dp_evt_sw_pen),
                             "sw_pen_base": float(dp_evt_sw_pen_base),
                             "sw_pen_factor": float(dp_evt_sw_pen_factor),
+                            "sw_hysteresis_scale": float(dp_evt_sw_hysteresis_scale),
                             "sw_ten_scale": float(dp_evt_sw_ten_scale),
+                            "sw_spk_margin_scale": float(dp_evt_sw_spk_margin_scale),
                             "cp_scale": float(dp_evt_cp_scale) if dp_evt_cp_scale is not None else None,
                             "uncertain_scale": float(dp_evt_uncertain_scale),
                             "lex_scale": float(dp_evt_lex_scale) if dp_evt_lex_scale is not None else None,
@@ -2230,6 +2342,10 @@ class OverlapDPAligner:
                             "switch_uncertain_entropy_norm_th": float(switch_uncertain_entropy_norm_th),
                             "switch_uncertain_margin_th": float(switch_uncertain_margin_th),
                             "switch_uncertain_use_speech_mask": bool(switch_uncertain_use_speech_mask),
+                            "switch_hysteresis_sec": float(switch_hysteresis_sec),
+                            "switch_hysteresis_mult": float(switch_hysteresis_mult),
+                            "switch_spk_margin_th": float(switch_spk_margin_th),
+                            "switch_spk_margin_mult": float(switch_spk_margin_mult),
                             "speech_th_for_uncertain": float(speech_th_for_uncertain),
                         },
                         "word_window_sec": float(word_window_sec),

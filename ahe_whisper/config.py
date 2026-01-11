@@ -42,8 +42,8 @@ class DiarizationConfig:
     target_speakers: Optional[int] = 2
     # VBx-Lite resegmentation
     enable_vbx_resegmentation: bool = True
-    vbx_p_stay_speech: float = 0.995
-    vbx_p_stay_silence: float = 0.999
+    vbx_p_stay_speech: float = 0.998
+    vbx_p_stay_silence: float = 0.9995
     vbx_speech_th: float = 0.35
     vbx_out_hard_mix: float = 0.20
     vbx_min_run_sec: float = 1.0
@@ -179,7 +179,7 @@ class AlignerConfig:
     beta: float = 0.8    # 話者確率 spk_probs の重み
     gamma: float = 0.5    # word_cost の重み
 
-    delta_switch: float = 1.2
+    delta_switch: float = 1.5
     non_speech_th: float = 0.02
     grid_hz: int = 50
 
@@ -193,6 +193,11 @@ class AlignerConfig:
     runlen_switch_gamma: float = 0.0
     # ラン長として考慮する最大秒数（これ以上は同じ扱い。長大ターンでも暴れないようにサチュレート）
     runlen_max_sec: float = 20.0
+    # --- NEW: 短時間での再スイッチ抑制（振動対策） ---
+    # 直前のスイッチからこの秒数以内の再スイッチを重くする。
+    switch_hysteresis_sec: float = 6.0
+    # 再スイッチ抑制の倍率（1.0なら無効）。
+    switch_hysteresis_mult: float = 5.0
 
     # --- NEW: TEN VAD 由来スコアの重み ---
     # DP 内のスイッチペナルティを、
@@ -208,15 +213,15 @@ class AlignerConfig:
     # 句読点の終端から、この秒数ぶんの範囲でスイッチペナルティを緩和する。
     lexical_window_sec: float = 0.3
     # 質問文末（? / ？）直後でのスイッチペナルティ倍率（0.0〜1.0、1.0=無効）。
-    lexical_question_switch_scale: float = 0.4
+    lexical_question_switch_scale: float = 1.0
     # 平叙文末（。 / .）直後でのスイッチペナルティ倍率（0.0〜1.0、1.0=無効）。
-    lexical_period_switch_scale: float = 0.8
+    lexical_period_switch_scale: float = 1.0
 
     # --- NEW: embedding change-point based switch modulation ---
     # change-point が強いほどスイッチ遷移を通しやすくするための係数。
     # 0.0 のままなら無効（従来どおり）。
     # B（cp有効）: switch_cp_k=0.5, switch_cp_smooth_win=5
-    switch_cp_k: float = 1.5
+    switch_cp_k: float = 1.0
     switch_cp_smooth_win: int = 25
     # --- NEW: cp-scale floor under posterior uncertainty ---
     # cp が強い (cp_t が大きい) ほど switch_penalty を下げる設計だが、posterior が曖昧 (p_margin が小さい) 場合に
@@ -241,18 +246,24 @@ class AlignerConfig:
     # - entropy_norm = entropy / log(K) in [0,1]（K=話者数）
     # - margin は top1-top2 in [0,1]
     # 互換性: mult=1.0 なら従来と同じ。
-    switch_uncertain_penalty_mult: float = 1.8
+    switch_uncertain_penalty_mult: float = 1.5
     switch_uncertain_entropy_norm_th: float = 0.99
-    switch_uncertain_margin_th: float = 0.15
+    switch_uncertain_margin_th: float = 0.10
 
     # Uncertainty boost を VAD(speech_mask) でゲートするか。
     # False: VAD が境界で落ちるケースでも uncertain 判定を有効にする（境界スイッチ遅延の診断/改善向け）。
     switch_uncertain_use_speech_mask: bool = False
 
+    # --- NEW: speaker-margin based switch suppression ---
+    # spk_margin が小さい（話者が判別できない）フレームではスイッチ罰則を強化する。
+    # switch_spk_margin_mult=1.0 なら無効。
+    switch_spk_margin_th: float = 0.10
+    switch_spk_margin_mult: float = 3.0
+
     # --- NEW: Frame-level DP emission mode ---
     # "prob" (既定) or "log" / "logp". 
     # "log" にするとフレームDPの speaker 項を対数ドメインで扱い、スイッチ罰則（delta_switch）との整合を高める。
-    frame_emission_mode: str = "log"
+    frame_emission_mode: str = "prob"
 
     # --- NEW: Word-level Viterbi DP (単語DP) ---
     # ASR の単語区間で spk_probs/beta_t を集約し、単語列上で Viterbi を回して
@@ -282,9 +293,9 @@ class AlignerConfig:
     # --- NEW: Titanet posterior calibration (peakiness control) ---
     # posterior_temperature > 1.0 で分布をフラット化（softmax 温度スケーリング相当）。
     # 入力 spk_probs は確率 (行和=1) 前提で、p^(1/T) により温度を適用する。
-    posterior_temperature: float = 2.0
+    posterior_temperature: float = 2.5
     # 一様分布との混合率 λ（0.0=無効）。p'=(1-λ)p+λ/K。
-    posterior_uniform_mix: float = 0.05
+    posterior_uniform_mix: float = 0.08
     # 話者 posterior の“音響証拠”の強さを調整する係数（p^w で近似、1.0=無効）。
     # w < 1.0 でフラット化、w > 1.0 でピーク強調。
     acoustic_weight: float = 1.0
@@ -332,6 +343,12 @@ class AlignerConfig:
             raise ValueError(f"runlen_switch_gamma must be >= 0, got {self.runlen_switch_gamma}")
         if self.runlen_max_sec <= 0.0:
             raise ValueError(f"runlen_max_sec must be > 0, got {self.runlen_max_sec}")
+        if self.switch_hysteresis_sec < 0.0:
+            raise ValueError(f"switch_hysteresis_sec must be >= 0, got {self.switch_hysteresis_sec}")
+        if self.switch_hysteresis_mult < 1.0:
+            raise ValueError(
+                f"switch_hysteresis_mult must be >= 1.0, got {self.switch_hysteresis_mult}"
+            )
         if self.ten_weight < 0.0:
             raise ValueError(f"ten_weight must be >= 0, got {self.ten_weight}")
         if self.lexical_window_sec < 0.0:
@@ -363,6 +380,14 @@ class AlignerConfig:
         if not isinstance(self.switch_uncertain_use_speech_mask, bool):
             raise TypeError(
                 f"switch_uncertain_use_speech_mask must be bool, got {type(self.switch_uncertain_use_speech_mask).__name__}"
+            )
+        if self.switch_spk_margin_th < 0.0:
+            raise ValueError(
+                f"switch_spk_margin_th must be >= 0, got {self.switch_spk_margin_th}"
+            )
+        if self.switch_spk_margin_mult < 1.0:
+            raise ValueError(
+                f"switch_spk_margin_mult must be >= 1.0, got {self.switch_spk_margin_mult}"
             )
         if self.switch_cp_k < 0.0:
             raise ValueError(f"switch_cp_k must be >= 0, got {self.switch_cp_k}")
