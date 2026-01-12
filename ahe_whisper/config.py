@@ -131,6 +131,18 @@ class BoundaryRefineParams:
     use_local_dp: bool = True
     local_dp_switch_scale: float = 0.3
     local_dp_min_frames: int = 3
+    multi_scale_enable: bool = False
+    multi_scale_win_secs: List[float] = field(default_factory=lambda: [0.8, 0.4, 0.2])
+    multi_scale_hop_secs: List[float] = field(default_factory=lambda: [0.4, 0.2, 0.1])
+    multi_scale_vote_mode: str = "weighted"
+    multi_scale_vote_margin_th: float = 0.10
+    multi_scale_vote_weight_exp: float = 1.0
+    multi_scale_vote_min: int = 2
+    multi_scale_micro_avg_offsets_sec: List[float] = field(
+        default_factory=lambda: [-0.1, 0.0, 0.1]
+    )
+    split_window_enable: bool = False
+    split_window_center_pad_sec: float = 0.0
 
     def __post_init__(self) -> None:
         if self.max_candidates < 1:
@@ -149,6 +161,38 @@ class BoundaryRefineParams:
             raise ValueError(f"local_dp_switch_scale must be >= 0, got {self.local_dp_switch_scale}")
         if self.local_dp_min_frames < 1:
             raise ValueError(f"local_dp_min_frames must be >= 1, got {self.local_dp_min_frames}")
+        if not self.multi_scale_win_secs:
+            raise ValueError("multi_scale_win_secs must not be empty")
+        if not self.multi_scale_hop_secs:
+            raise ValueError("multi_scale_hop_secs must not be empty")
+        if len(self.multi_scale_win_secs) != len(self.multi_scale_hop_secs):
+            raise ValueError(
+                "multi_scale_win_secs and multi_scale_hop_secs must have the same length"
+            )
+        if any(sec <= 0.0 for sec in self.multi_scale_win_secs):
+            raise ValueError("multi_scale_win_secs must be > 0")
+        if any(sec <= 0.0 for sec in self.multi_scale_hop_secs):
+            raise ValueError("multi_scale_hop_secs must be > 0")
+        if self.multi_scale_vote_mode not in ("weighted", "approval"):
+            raise ValueError(
+                f"multi_scale_vote_mode must be 'weighted' or 'approval', got {self.multi_scale_vote_mode}"
+            )
+        if self.multi_scale_vote_margin_th < 0.0:
+            raise ValueError(
+                f"multi_scale_vote_margin_th must be >= 0, got {self.multi_scale_vote_margin_th}"
+            )
+        if self.multi_scale_vote_weight_exp <= 0.0:
+            raise ValueError(
+                f"multi_scale_vote_weight_exp must be > 0, got {self.multi_scale_vote_weight_exp}"
+            )
+        if self.multi_scale_vote_min < 1:
+            raise ValueError(
+                f"multi_scale_vote_min must be >= 1, got {self.multi_scale_vote_min}"
+            )
+        if self.split_window_center_pad_sec < 0.0:
+            raise ValueError(
+                f"split_window_center_pad_sec must be >= 0, got {self.split_window_center_pad_sec}"
+            )
 
 _BOUNDARY_REFINE_PRESETS: Dict[str, BoundaryRefineParams] = {
     "default": BoundaryRefineParams(),
@@ -169,6 +213,16 @@ _BOUNDARY_REFINE_PRESETS: Dict[str, BoundaryRefineParams] = {
         short_win_sec=0.6,
         short_hop_sec=0.3,
         local_dp_switch_scale=0.2,
+    ),
+    "split_window": BoundaryRefineParams(
+        split_window_enable=True,
+    ),
+    "three_step": BoundaryRefineParams(
+        multi_scale_enable=True,
+    ),
+    "three_step_split": BoundaryRefineParams(
+        multi_scale_enable=True,
+        split_window_enable=True,
     ),
 }
 
