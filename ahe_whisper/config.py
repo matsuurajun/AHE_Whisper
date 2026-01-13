@@ -219,6 +219,8 @@ _BOUNDARY_REFINE_PRESETS: Dict[str, BoundaryRefineParams] = {
     ),
     "three_step": BoundaryRefineParams(
         multi_scale_enable=True,
+        multi_scale_vote_margin_th=0.2,
+        multi_scale_vote_min=3,
     ),
     "three_step_split": BoundaryRefineParams(
         multi_scale_enable=True,
@@ -376,7 +378,7 @@ class AlignerConfig:
 
     # --- NEW: boundary refinement (short-window + local DP) ---
     boundary_refine_enable: bool = True
-    boundary_refine_preset: str = "default"
+    boundary_refine_preset: str = "three_step"
     boundary_refine_backend_required: Optional[str] = None
     boundary_refine_params: BoundaryRefineParams = field(
         default_factory=lambda: BoundaryRefineParams(
@@ -522,9 +524,14 @@ class AlignerConfig:
         if overrides is None:
             return params
         default_params = _BOUNDARY_REFINE_PRESETS["default"]
-        if preset_name != "default" and overrides == default_params:
+        override_values: Dict[str, object] = {}
+        for f in fields(BoundaryRefineParams):
+            override_val = getattr(overrides, f.name)
+            default_val = getattr(default_params, f.name)
+            if override_val != default_val:
+                override_values[f.name] = override_val
+        if not override_values:
             return params
-        override_values = {f.name: getattr(overrides, f.name) for f in fields(BoundaryRefineParams)}
         return replace(params, **override_values)
 
 @dataclass
