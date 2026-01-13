@@ -9,6 +9,7 @@ Create a focused report for false HOST intervals using boundary_snap events.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import re
 import sys
@@ -17,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 RUN_TS_RE = re.compile(r"^(\d{8}_\d{6})_")
 PUNCT_TOKENS = ("?", "？", "。", ".")
+SNAP_TS_TOL_SEC = 2
 
 
 def resolve_path(path_str: str, base_dir: Path) -> Path:
@@ -31,6 +33,13 @@ def derive_run_ts(run_dir: Path) -> Optional[str]:
     if not match:
         return None
     return match.group(1)
+
+
+def _parse_ts(ts: str) -> Optional[dt.datetime]:
+    try:
+        return dt.datetime.strptime(ts, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
 
 
 def resolve_eval(run_dir: Path, base_dir: Path, eval_arg: Optional[str]) -> Path:
@@ -56,7 +65,32 @@ def resolve_snap(run_dir: Path, base_dir: Path, snap_arg: Optional[str]) -> Path
     out_dir = run_dir.parent
     matches = sorted(out_dir.glob(f"{run_ts}_boundary_snap*.jsonl"))
     if not matches:
-        raise FileNotFoundError(f"no boundary_snap file found for run_ts={run_ts} in {out_dir}")
+        candidates = sorted(out_dir.glob("*_boundary_snap*.jsonl"))
+        if not candidates:
+            raise FileNotFoundError(f"no boundary_snap file found for run_ts={run_ts} in {out_dir}")
+        run_dt = _parse_ts(run_ts)
+        if run_dt is None:
+            raise FileNotFoundError(f"no boundary_snap file found for run_ts={run_ts} in {out_dir}")
+        best = None
+        best_sec = None
+        for cand in candidates:
+            m = RUN_TS_RE.match(cand.name)
+            if not m:
+                continue
+            c_dt = _parse_ts(m.group(1))
+            if c_dt is None:
+                continue
+            delta = abs((c_dt - run_dt).total_seconds())
+            if best_sec is None or delta < best_sec:
+                best_sec = delta
+                best = cand
+        if best is None or best_sec is None or best_sec > SNAP_TS_TOL_SEC:
+            raise FileNotFoundError(f"no boundary_snap file found for run_ts={run_ts} in {out_dir}")
+        print(
+            f"[INFO] snap timestamp mismatch; using {best.name} (delta={best_sec:.1f}s)",
+            file=sys.stderr,
+        )
+        return best
     preferred = out_dir / f"{run_ts}_boundary_snap.jsonl"
     if preferred.exists():
         return preferred

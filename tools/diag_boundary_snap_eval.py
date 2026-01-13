@@ -10,12 +10,14 @@ Defaults are tuned for the AHE-Whisper diagnostic workflow.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 RUN_TS_RE = re.compile(r"^(\d{8}_\d{6})_")
+SNAP_TS_TOL_SEC = 2
 
 
 def resolve_path(path_str: str, base_dir: Path) -> Path:
@@ -30,6 +32,13 @@ def derive_run_ts(run_dir: Path) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def _parse_ts(ts: str) -> dt.datetime | None:
+    try:
+        return dt.datetime.strptime(ts, "%Y%m%d_%H%M%S")
+    except ValueError:
+        return None
 
 
 def derive_safe_basename(run_dir: Path) -> str | None:
@@ -92,9 +101,38 @@ def resolve_snap(
     out_dir = run_dir.parent
     matches = sorted(out_dir.glob(f"{run_ts}_boundary_snap*.jsonl"))
     if not matches:
-        raise FileNotFoundError(
-            f"no boundary_snap file found for run_ts={run_ts} in {out_dir} (use --snap)"
+        candidates = sorted(out_dir.glob("*_boundary_snap*.jsonl"))
+        if not candidates:
+            raise FileNotFoundError(
+                f"no boundary_snap file found for run_ts={run_ts} in {out_dir} (use --snap)"
+            )
+        run_dt = _parse_ts(run_ts)
+        if run_dt is None:
+            raise FileNotFoundError(
+                f"no boundary_snap file found for run_ts={run_ts} in {out_dir} (use --snap)"
+            )
+        best = None
+        best_sec = None
+        for cand in candidates:
+            m = RUN_TS_RE.match(cand.name)
+            if not m:
+                continue
+            c_dt = _parse_ts(m.group(1))
+            if c_dt is None:
+                continue
+            delta = abs((c_dt - run_dt).total_seconds())
+            if best_sec is None or delta < best_sec:
+                best_sec = delta
+                best = cand
+        if best is None or best_sec is None or best_sec > SNAP_TS_TOL_SEC:
+            raise FileNotFoundError(
+                f"no boundary_snap file found for run_ts={run_ts} in {out_dir} (use --snap)"
+            )
+        print(
+            f"[INFO] snap timestamp mismatch; using {best.name} (delta={best_sec:.1f}s)",
+            file=sys.stderr,
         )
+        return best
 
     preferred = out_dir / f"{run_ts}_boundary_snap.jsonl"
     if preferred.exists():
