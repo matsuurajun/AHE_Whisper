@@ -548,6 +548,8 @@ class ExportConfig:
     # True のとき、セグメント境界を近傍の単語境界へスナップする（max 秒以内）。
     enable_boundary_snap: bool = True
     boundary_snap_max_sec: float = 0.5
+    # True のとき、Sudachi による形態素グルーピングをスナップ候補に使う
+    boundary_snap_use_sudachi: bool = True
 
 @dataclass
 class AppConfig:

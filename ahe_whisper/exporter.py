@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple
 
 from ahe_whisper.config import ExportConfig
+from ahe_whisper.word_grouper import group_words_sudachi
 import logging
 
 # GUIワーカー(`pipeline_worker.py`)と同じロガーを使う
@@ -175,7 +176,7 @@ def _snap_segments_to_word_boundaries(
     max_snap_sec: float = 0.5,
 ) -> List[Dict[str, Any]]:
     """
-    DP などで決まったセグメント境界を、近傍の単語終端 (word['end']) にスナップする。
+    DP などで決まったセグメント境界を、近傍の単語境界 (start/end) にスナップする。
     - segments: {"start", "end", "speaker", "text"} を含む dict のリスト
     - words   : {"start", "end", "text"} を含む dict のリスト
     """
@@ -184,20 +185,24 @@ def _snap_segments_to_word_boundaries(
 
     # 念のため時間順ソート
     segs = sorted(segments, key=lambda s: float(s.get("start", 0.0)))
-    # 単語終端だけを見る（Whisper の word-level timestamp を利用）
-    word_ends: List[Tuple[float, bool]] = []
+    # 単語境界（start/end）を候補として保持する
+    word_bounds: List[Tuple[float, bool, bool]] = []
     boundary_marks = ("？", "?", "。", "！", "!")
     for w in words:
-        end_raw = w.get("end")
         try:
-            t_end = float(end_raw)
+            t_start = float(w.get("start"))
+            t_end = float(w.get("end"))
         except (TypeError, ValueError):
+            continue
+        if t_end <= t_start:
             continue
         wtxt = (w.get("text") or w.get("word") or "").strip()
         has_mark = wtxt.endswith(boundary_marks)
-        word_ends.append((t_end, has_mark))
+        # (time, has_mark, is_end)
+        word_bounds.append((t_start, False, False))
+        word_bounds.append((t_end, has_mark, True))
 
-    if not word_ends:
+    if not word_bounds:
         return segs
 
     max_snap = float(max_snap_sec)
@@ -214,27 +219,25 @@ def _snap_segments_to_word_boundaries(
         except (TypeError, ValueError):
             continue
 
-        best_t = None
-        best_mark_t = None
+        best = None
+        best_key = None
 
-        # 「最近傍」ではなく、「境界より前の最後の word.end」にスナップする
-        for t_word, has_mark in word_ends:
-            # 境界より後ろの単語終端は無視
-            if t_word > t_boundary:
+        # 前後の単語境界から「最近傍」を選ぶ（同距離なら句読点/end を優先）
+        for t_word, has_mark, is_end in word_bounds:
+            if t_word <= left_start + eps or t_word >= right_end - eps:
                 continue
-            dist = t_boundary - t_word
+            dist = abs(t_boundary - t_word)
             if dist > max_snap:
                 continue
-            # t_word は t_boundary より前なので、「一番大きい t_word」を選ぶ
-            if best_t is None or t_word > best_t:
-                best_t = t_word
-            if has_mark and (best_mark_t is None or t_word > best_mark_t):
-                best_mark_t = t_word
+            key = (dist, 0 if has_mark else 1, 0 if is_end else 1)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = t_word
 
-        if best_t is None:
+        if best is None:
             continue
 
-        new_t = float(best_mark_t if best_mark_t is not None else best_t)
+        new_t = float(best)
 
         # 境界が逆転しないように安全チェック
         if new_t <= left_start + eps:
@@ -619,14 +622,35 @@ class Exporter:
                 #    DP で決まった start/end を、近傍の単語終端に寄せる。
                 #    評価用のフレームラベルは変えず、出力用のセグメントだけ整形する。
                 if bool(getattr(self.config, "enable_boundary_snap", True)):
+                    snap_words = valid_words
+                    if bool(getattr(self.config, "boundary_snap_use_sudachi", True)):
+                        snap_words = group_words_sudachi(valid_words)
+                        if len(snap_words) != len(valid_words):
+                            LOGGER.info(
+                                "[WORD-GROUP] snap candidates: %d -> %d",
+                                len(valid_words),
+                                len(snap_words),
+                            )
                     final_segs = _snap_segments_to_word_boundaries(
                         final_segs,
-                        valid_words,
+                        snap_words,
                         max_snap_sec=float(getattr(self.config, "boundary_snap_max_sec", 0.5))
                     )
 
             # 単語→セグメントを一意に割り当てて text を再構成
             words, final_segs = _assign_words_to_segments(words, final_segs)
+            # grouped words がある場合は text だけ差し替えて単語内分断を抑える
+            if bool(getattr(self.config, "boundary_snap_use_sudachi", True)):
+                grouped_words = group_words_sudachi(valid_words)
+                if len(grouped_words) != len(valid_words):
+                    _, grouped_segs = _assign_words_to_segments(grouped_words, final_segs)
+                    if grouped_segs:
+                        LOGGER.info(
+                            "[WORD-GROUP] regrouped segment text: %d -> %d",
+                            len(final_segs),
+                            len(grouped_segs),
+                        )
+                        final_segs = grouped_segs
         else:
             # セグメントが無い場合でも speaker フィールドだけは整理しておく
             words, final_segs = _assign_words_to_segments(words, final_segs)

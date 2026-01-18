@@ -6,6 +6,8 @@ import logging
 
 LOGGER = logging.getLogger("ahe_whisper_worker")
 
+_PUNCT_CHARS = set("。、？！?!,.，．・：；…")
+
 try:
     from sudachipy import Dictionary, Tokenizer
 except ImportError:
@@ -18,6 +20,28 @@ _sudachi_lock = Lock()
 def _get_text(w: Dict[str, Any]) -> str:
     text = w.get('text', w.get('word'))
     return "" if text is None else str(text)
+
+def _is_cjk_char(ch: str) -> bool:
+    return (
+        "\u3040" <= ch <= "\u30FF"
+        or "\u4E00" <= ch <= "\u9FFF"
+        or "\u3400" <= ch <= "\u4DBF"
+        or "\uF900" <= ch <= "\uFAFF"
+        or "\u3000" <= ch <= "\u303F"
+    )
+
+def _is_punct_text(text: str) -> bool:
+    return bool(text) and all(ch in _PUNCT_CHARS for ch in text)
+
+def _is_cjk_text(text: str) -> bool:
+    if not text:
+        return False
+    for ch in text:
+        if ch.isspace() or ch in _PUNCT_CHARS:
+            return False
+        if not (_is_cjk_char(ch) or ch == "ー"):
+            return False
+    return True
 
 def _get_tokenizer():
     global _sudachi_tokenizer
@@ -33,16 +57,6 @@ def group_words_sudachi(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     修正版: 単語のグループ化を行うが、すべての単語を確実に保持する
     """
-    if Tokenizer is None or not words:
-        return words
-
-    try:
-        tokenizer = _get_tokenizer()
-        mode = Tokenizer.SplitMode.C
-    except (ImportError, Exception) as e:
-        LOGGER.error(f"Failed to initialize SudachiPy tokenizer, returning original words. Error: {e}")
-        return words
-
     # 正規化: text/wordと時間情報を持つ単語のみ
     norm_words = [w for w in words if _get_text(w) and w.get('start') is not None and w.get('end') is not None]
     
@@ -54,14 +68,123 @@ def group_words_sudachi(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         LOGGER.warning(f"Too few words ({len(norm_words)}) for grouping, returning original")
         return norm_words
 
+    def _group_words_heuristic(words_in: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        max_gap_sec = 0.12
+        max_group_chars = 8
+        max_group_sec = 1.5
+        max_token_chars = 2
+
+        def _get_prob(w: Dict[str, Any]) -> float:
+            for key in ("prob", "confidence", "avg_logprob"):
+                val = w.get(key)
+                if val is None:
+                    continue
+                try:
+                    return float(val)
+                except (TypeError, ValueError):
+                    continue
+            return 0.8
+
+        grouped: List[Dict[str, Any]] = []
+        cur_words: List[Dict[str, Any]] = []
+        cur_text = ""
+        cur_start = None
+        cur_end = None
+
+        def _flush():
+            if not cur_words:
+                return
+            probs = [_get_prob(w) for w in cur_words]
+            grouped.append(
+                {
+                    "text": cur_text,
+                    "start": cur_start,
+                    "end": cur_end,
+                    "prob": sum(probs) / float(len(probs)),
+                    "words": list(cur_words),
+                }
+            )
+
+        for w in words_in:
+            text = _get_text(w).strip()
+            if not text:
+                continue
+            try:
+                w_start = float(w.get("start"))
+                w_end = float(w.get("end"))
+            except (TypeError, ValueError):
+                _flush()
+                grouped.append(w)
+                cur_words = []
+                cur_text = ""
+                cur_start = None
+                cur_end = None
+                continue
+            if w_end <= w_start:
+                continue
+
+            if not cur_words:
+                cur_words = [w]
+                cur_text = text
+                cur_start = w_start
+                cur_end = w_end
+                continue
+
+            prev = cur_words[-1]
+            prev_text = _get_text(prev).strip()
+            try:
+                prev_end = float(prev.get("end"))
+            except (TypeError, ValueError):
+                prev_end = None
+
+            gap = None if prev_end is None else (w_start - prev_end)
+            if gap is None or gap < 0.0:
+                gap = 0.0
+
+            can_merge = (
+                gap <= max_gap_sec
+                and not _is_punct_text(prev_text)
+                and not _is_punct_text(text)
+                and _is_cjk_text(prev_text)
+                and _is_cjk_text(text)
+                and (len(prev_text) <= max_token_chars or len(text) <= max_token_chars)
+                and (len(cur_text) + len(text)) <= max_group_chars
+                and (w_end - float(cur_start)) <= max_group_sec
+            )
+
+            if can_merge:
+                cur_words.append(w)
+                cur_text += text
+                cur_end = w_end
+            else:
+                _flush()
+                cur_words = [w]
+                cur_text = text
+                cur_start = w_start
+                cur_end = w_end
+
+        _flush()
+        return grouped if grouped else words_in
+
+    if Tokenizer is None or not words:
+        grouped = _group_words_heuristic(norm_words)
+        if len(grouped) != len(norm_words):
+            LOGGER.info("[WORD-GROUP] heuristic: %d -> %d", len(norm_words), len(grouped))
+        return grouped
+
     # テキスト全体を構築
     full_text = "".join(_get_text(w) for w in norm_words).replace(" ", "")
     
     try:
+        tokenizer = _get_tokenizer()
+        mode = Tokenizer.SplitMode.C
         morphemes = list(tokenizer.tokenize(full_text, mode))
     except Exception as e:
-        LOGGER.error(f"SudachiPy tokenization failed, returning original words. Error: {e}")
-        return norm_words
+        LOGGER.error(f"SudachiPy tokenization failed, using heuristic grouping. Error: {e}")
+        grouped = _group_words_heuristic(norm_words)
+        if len(grouped) != len(norm_words):
+            LOGGER.info("[WORD-GROUP] heuristic: %d -> %d", len(norm_words), len(grouped))
+        return grouped
 
     grouped_words = []
     word_idx = 0
